@@ -42,16 +42,23 @@ def test_agent_contract_dtos_construct() -> None:
         http=None,  # type: ignore[arg-type]
         settings=object(),
     )
-    result = RunResult(output="done", usage=RunUsage(input_tokens=1, output_tokens=2, requests=1, cost_usd=0.01))
+    result = RunResult(
+        output="done",
+        usage=RunUsage(input_tokens=1, output_tokens=2, requests=1, tool_calls=1, cost_usd=None),
+    )
     event = SlackEvent(
         channel_id="C1",
         thread_ts="T1",
         user="U1",
         text="hi",
+        event_id="Ev123",
         event_ts="E1",
         is_mention=True,
     )
 
     assert deps.ctx.channel_id == "C1"
+    assert result.usage.cost_usd is None
+    assert result.usage.tool_calls == 1
     assert result.status == "ok"
+    assert event.event_id == "Ev123"
     assert event.is_mention is True

@@ -3,6 +3,7 @@
 > **For Claude:** REQUIRED SUB-SKILLS — **superpowers:using-git-worktrees** (one worktree per workstream), **superpowers:test-driven-development** (RED→GREEN→commit every task), **superpowers:executing-plans** / **superpowers:subagent-driven-development** (drive each workstream).
 >
 > **Revision history:** v2 (2026-06-23) — reworked Stage 1 after a Codex review: Foundation now defines the **execution contracts** (`AgentDeps`, typed tool shape, `AgentRunner`, transcript/usage/Slack DTOs, sandbox session+policy), not just storage models; registry uses package-scanning (no shared-file edits); DB uses JSONB+indexes+naming conventions; async engine via factory (no import-time global); Alembic baseline manually reviewed.
+> v3 (2026-06-23) — applied a Codex Stage-2 review: added the **resource & lifecycle ownership** contract (orchestrator owns sandbox/DB/HTTP/task lifecycle — the #1 risk), corrected pydantic-ai 2.0.0 usage (cost is *computed*, not in `RunUsage`; `message_history` ≠ transcript; dropped cache-point), locked tool-factory signatures, added `event_id` idempotency, and expanded Stage-3 gates. See **Cross-cutting corrections (v3)** below — these supersede the per-task text where they differ.
 
 **Goal:** Ship Henry V1 — an open-source, self-hosted, model-agnostic AI teammate in Slack that works in any channel, remembers each channel, and can read GitHub / search the web / run code in a sandbox.
 
@@ -49,7 +50,39 @@ Stage 3 merge order: B, C, D, A, E.
 
 ---
 
+## Cross-cutting corrections (v3 — from the Codex Stage-2 review)
+
+> **These supersede the per-task text below wherever they conflict, and MUST be settled in Foundation before the worktrees fork.** Codex's #1 risk: lifecycle/ownership was split across WS-A/D/E and nobody owned it → leaks, duplicate side effects, secret exposure.
+
+**Resource & lifecycle ownership — the orchestrator/runner owns every per-run resource and releases it in `finally`:**
+- **Sandbox session:** created lazily, keyed by **`ctx.run_id`** (NOT `thread_ts` — that leaks across turns and collides across channels). Orchestrator destroys it in `finally`; `SandboxPolicy.ttl_s` drives a backup janitor that reaps orphaned containers. Tools only *use* it via `ctx.deps.sandbox`.
+- **DB sessions:** `PostgresMemory` is built with a **`sessionmaker`** and opens a **fresh `AsyncSession` per method** — never a shared injected session (Pydantic AI may run tools concurrently; `AsyncSession` is not concurrency-safe).
+- **HTTP client:** the app makes **one shared `httpx.AsyncClient`**, passed to `OpenAIProvider(http_client=...)` and to integrations via `deps.http`; closed on shutdown.
+- **Background Slack task:** wrapped so **every** exit path (success / budget / model error / tool error / crash) updates Slack, writes the audit row, refreshes-or-intentionally-skips memory, and destroys the sandbox.
+- **Tools never own lifecycle** — they read `ctx.deps.{memory,sandbox,http}`.
+
+**pydantic-ai 2.0.0 corrections (Codex verified against 2.0.0 source):**
+- `RunUsage` exposes **tokens / requests / tool_calls — not USD.** Compute `cost_usd` best-effort by summing `ModelResponse.cost().total_price` across responses; store it **nullable** (unknown for self-hosted/LiteLLM is expected).
+- `message_history` is `Sequence[pydantic_ai.messages.ModelMessage]`, **not** our `ConversationTranscript`. **V1 does not use `message_history`** — Slack thread context is fed into the prompt via `ConversationTranscript.render()`. Cross-run continuity = channel memory.
+- **Drop the `instructions` "cache point"** optimization (A2) — `instructions` is string/callable; `CachePoint` is user-content and some providers filter it. Not portable.
+
+**Tool-factory signatures (locked so WS-A and WS-D don't mismatch):** `memory_tools()` and `sandbox_tools()` take **no arguments**; tool functions read `ctx.deps.memory` / `ctx.deps.sandbox`. WS-A's `_tools.py` stubs use these exact zero-arg signatures.
+
+**Idempotency:** dedup on Slack's **outer `event_id`** (not `event_ts`), backed by a new Foundation table `processed_events(event_id TEXT PRIMARY KEY, ts)` — handles Slack retries and duplicate `message`+`app_mention` delivery for one mention.
+
+**Per-workstream P0 deltas (apply within the tasks below):**
+- **WS-A:** runner catches `UsageLimitExceeded`, model/API errors, and tool errors → `RunResult.status`/`error`; nothing escapes unstructured.
+- **WS-C:** `web_fetch` is an **SSRF surface** — scheme allowlist (http/https), resolve-and-block private/loopback/link-local/cloud-metadata IPs, cap redirects, cap size+time, and **enforce `allowed_domains` (not decorative).** GitHub **token redaction covers tool outputs, errors, audit rows, Slack messages, and request dumps** — redact at the boundary. GitHub **write tools (open_pr/create_issue) gated** behind an explicit per-channel capability flag.
+- **WS-D:** `network='none'` **conflicts with `clone_repo`** — for V1, fetch the repo **host-side as a scoped-token tarball (GitHub archive API) and copy it into the container**; do NOT enable general sandbox egress. Timeout-kill leaves the session dead → mark destroyed, lazily recreate next call. `put_archive`/`get_archive` need path-traversal / symlink / size / truncation defenses.
+- **WS-E:** make `deps_factory`, config loader, audit sink, and transcript fetcher **injectable** so the orchestrator builds against `FakeAgentRunner` + fakes. `ThreadLocks` are single-replica only (documented; multi-replica → Postgres advisory locks).
+
+**Stage 3 — expanded gates (Z3/Z4 must also cover):** budget-exceeded path · model failure · **sandbox timeout cleanup with zero leftover containers** · Slack ack < 3s while a long run continues · retry/duplicate dedup · concurrent memory writes from parallel threads · **token absent from Slack output AND DB audit AND logs** (grep all three).
+
+---
+
 # STAGE 1 — FOUNDATION  (`main`, sequential)
+
+> **STATUS: F1–F8 BUILT & COMMITTED** (`ca911e6`). Verified against this plan: `contracts.py` (AgentDeps/AgentRunner/RunResult/RunUsage/ToolSpec/SlackEvent), `types.py` (incl. ConversationTranscript), `interfaces.py` (Memory/Sandbox/Integration → `tools()->list[ToolSpec]`), `db/models.py` (JSONB + naming conventions + indexes + dedup_key), `db/session.py` (`make_engine`/`make_sessionmaker` factories), `config/registry.py`, `integrations/registry.py` (pkgutil scan), `testing/fakes.py` — all present and correct. Foundation was built off **plan v2**, so it predates the **v3** cross-cutting items. Apply **Task F9** before the worktrees fork.
 
 ### Task F1: Init repo
 **Files:** `pyproject.toml`, `LICENSE`, `CLA.md`, `.gitignore`, `README.md`, `compose.yaml`, `henry/__init__.py`.
@@ -262,7 +295,30 @@ def get_integrations(names, registry): return [registry[n] for n in names if n i
 - `FakeMemory` (dict-backed `Memory`, channel-scoped). `FakeSandbox` = **records calls deterministically** + a canned `ExecResult` (NOT a real subprocess — keep tests hermetic; an optional `LocalExecSandbox` can come later for integration tests). `FakeIntegration` returns one real `ToolSpec` (an async echo tool taking `RunContext[AgentDeps]`). `FakeAgentRunner` (returns a canned `RunResult`) for WS-E.
 - Test each satisfies its Protocol + `FakeAgentRunner.run` returns a `RunResult`. Commit.
 
-**Foundation done → `main` is the stable base. Create the 5 worktrees.**
+### Task F9: Foundation follow-up — v3 patches  *(apply before Stage 2 forks)*
+Foundation (F1–F8, `ca911e6`) was built off plan v2 and predates the v3 cross-cutting corrections. Three small patches close the gap. **Test:** extend `tests/test_db_models.py` + `tests/test_types.py`.
+
+**F9.1 — `processed_events` idempotency table.** In `henry/db/models.py`:
+```python
+class ProcessedEvent(Base):
+    __tablename__ = "processed_events"
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)   # Slack OUTER event_id
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+```
+Add an Alembic migration creating it (the baseline `20260623_0001_foundation.py` isn't shipped anywhere yet, so editing it in place is fine; otherwise add a new revision). Test: second insert of the same `event_id` raises `IntegrityError`. WS-E dedups on this.
+
+**F9.2 — make `cost_usd` nullable** (cost is *computed* best-effort per the v3 corrections; unknown for self-hosted/LiteLLM is expected — verified `pydantic_ai.usage.RunUsage` has no USD field):
+- `henry/contracts.py` `RunUsage.cost_usd` → `cost_usd: float | None = None`
+- `henry/db/models.py` `AuditLog.cost_usd` → `Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)` (drop the `default`)
+- baseline migration: `cost_usd` column → `nullable=True`
+
+**F9.3 — add `SlackEvent.event_id`.** In `henry/contracts.py`, add `event_id: str` to `SlackEvent` (the Slack **outer** event id — the dedup key for `processed_events`). Keep `event_ts` (that's the thread/reply ts, a different value).
+
+**F9.4 (optional) — `RunUsage.tool_calls: int = 0`** to mirror pydantic-ai 2.0.0's `RunUsage` and enrich the audit row.
+
+Commit: `feat(foundation): v3 follow-ups (processed_events, nullable cost_usd, event_id)`.
+
+**Foundation done (incl. F9) → `main` is the stable base. Create the 5 worktrees.**
 
 ---
 

@@ -75,7 +75,7 @@ def upgrade() -> None:
         sa.Column("model", sa.String(length=256), nullable=False),
         sa.Column("input_tokens", sa.Integer(), nullable=False),
         sa.Column("output_tokens", sa.Integer(), nullable=False),
-        sa.Column("cost_usd", sa.Numeric(precision=12, scale=6), nullable=False),
+        sa.Column("cost_usd", sa.Numeric(precision=12, scale=6), nullable=True),
         sa.Column("latency_ms", sa.Integer(), nullable=False),
         sa.Column("status", sa.String(length=32), nullable=False),
         sa.Column("error", sa.Text(), nullable=True),
@@ -83,9 +83,16 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name=op.f("pk_audit_log")),
     )
     op.create_index("ix_audit_log_channel_id_ts", "audit_log", ["channel_id", "ts"])
+    op.create_table(
+        "processed_events",
+        sa.Column("event_id", sa.String(length=128), nullable=False),
+        sa.Column("ts", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False),
+        sa.PrimaryKeyConstraint("event_id", name=op.f("pk_processed_events")),
+    )
 
 
 def downgrade() -> None:
+    op.drop_table("processed_events")
     op.drop_index("ix_audit_log_channel_id_ts", table_name="audit_log")
     op.drop_table("audit_log")
     op.drop_index("ix_task_status_run_at", table_name="task")

@@ -28,7 +28,8 @@ class RunUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     requests: int = 0
-    cost_usd: float = 0.0
+    tool_calls: int = 0
+    cost_usd: float | None = None
 
 
 RunStatus = Literal["ok", "budget_exceeded", "error"]
@@ -57,5 +58,6 @@ class SlackEvent:
     thread_ts: str
     user: str
     text: str
+    event_id: str
     event_ts: str
     is_mention: bool

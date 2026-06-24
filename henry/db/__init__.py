@@ -4,6 +4,7 @@ from henry.db.models import (
     ChannelConfig,
     ChannelMemory,
     ChannelStateRow,
+    ProcessedEvent,
     Task,
 )
 from henry.db.session import make_engine, make_sessionmaker
@@ -14,6 +15,7 @@ __all__ = [
     "ChannelConfig",
     "ChannelMemory",
     "ChannelStateRow",
+    "ProcessedEvent",
     "Task",
     "make_engine",
     "make_sessionmaker",
