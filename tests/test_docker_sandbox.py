@@ -21,9 +21,19 @@ class _RecordingContainers:
         return SimpleNamespace(id="container-1")
 
 
+class _RecordingVolumes:
+    def __init__(self) -> None:
+        self.kwargs: dict[str, Any] = {}
+
+    def create(self, **kwargs: Any) -> Any:
+        self.kwargs = kwargs
+        return SimpleNamespace(remove=lambda force: None)
+
+
 class _RecordingClient:
     def __init__(self) -> None:
         self.containers = _RecordingContainers()
+        self.volumes = _RecordingVolumes()
 
 
 def test_safe_path_blocks_workspace_escape() -> None:
@@ -52,6 +62,11 @@ async def test_start_applies_isolation_flags() -> None:
     assert kwargs["pids_limit"] == 256
     assert kwargs["cap_drop"] == ["ALL"]
     assert "no-new-privileges:true" in kwargs["security_opt"]
+    assert kwargs["tmpfs"] == {"/tmp": "rw,noexec,nosuid,size=64m"}
+    assert kwargs["mounts"][0]["Target"] == "/workspace"
+    assert kwargs["mounts"][0]["Type"] == "volume"
+    assert kwargs["mounts"][0]["ReadOnly"] is False
+    assert client.volumes.kwargs["labels"]["henry.sandbox"] == "true"
 
 
 @pytest.mark.asyncio

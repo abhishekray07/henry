@@ -29,7 +29,9 @@ async def _deps() -> AgentDeps:
     )
 
 
-async def test_runner_calls_integration_tool_and_maps_usage() -> None:
+async def test_runner_calls_integration_tool_and_maps_usage(monkeypatch) -> None:
+    monkeypatch.setattr("henry.agent.runner.memory_tools", lambda: [])
+    monkeypatch.setattr("henry.agent.runner.sandbox_tools", lambda: [])
     deps = await _deps()
     try:
         runner = PydanticAgentRunner([FakeIntegration()], model="test")
@@ -60,7 +62,9 @@ async def test_runner_maps_usage_limit_to_budget_status() -> None:
     assert "request_limit" in result.error
 
 
-async def test_runner_maps_tool_exception_to_error_status() -> None:
+async def test_runner_maps_tool_exception_to_error_status(monkeypatch) -> None:
+    monkeypatch.setattr("henry.agent.runner.memory_tools", lambda: [])
+    monkeypatch.setattr("henry.agent.runner.sandbox_tools", lambda: [])
     deps = await _deps()
     try:
         runner = PydanticAgentRunner([ExplodingIntegration()], model="test")

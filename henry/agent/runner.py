@@ -57,17 +57,18 @@ class PydanticAgentRunner:
     ) -> RunResult:
         try:
             snapshot = await deps.memory.snapshot(deps.ctx.channel_id)
+            integrations = self._active_integrations(deps)
             instructions = build_instructions(
-                self._base_instructions,
+                getattr(deps.settings, "system_prompt", self._base_instructions) or self._base_instructions,
                 snapshot,
-                [integration.prompt_fragment() for integration in self._integrations],
+                [integration.prompt_fragment() for integration in integrations],
             )
             agent = Agent(
                 self._build_model(deps),
                 deps_type=AgentDeps,
                 instructions=instructions,
                 tools=[
-                    *[tool for integration in self._integrations for tool in integration.tools()],
+                    *[tool for integration in integrations for tool in integration.tools()],
                     *memory_tools(),
                     *sandbox_tools(),
                 ],
@@ -97,6 +98,18 @@ class PydanticAgentRunner:
         if self._model is not None:
             return self._model
         return build_model(deps.settings.default_model, deps.settings, deps.http)
+
+    def _active_integrations(self, deps: AgentDeps) -> tuple[Integration, ...]:
+        enabled = getattr(deps.settings, "enabled_integrations", None)
+        if enabled is None:
+            return self._integrations
+
+        by_name = {integration.name: integration for integration in self._integrations}
+        unknown = set(enabled) - set(by_name)
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            raise ValueError(f"unknown integrations configured for agent runner: {names}")
+        return tuple(by_name[name] for name in enabled)
 
     @staticmethod
     def _render_prompt(user_prompt: str, transcript: ConversationTranscript | None) -> str:
