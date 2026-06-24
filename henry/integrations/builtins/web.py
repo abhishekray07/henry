@@ -5,8 +5,9 @@ import ipaddress
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import ParseResult, urljoin, urlparse
 
+import httpx
 from pydantic_ai import RunContext
 
 from henry.contracts import AgentDeps, ToolSpec
@@ -81,7 +82,15 @@ async def _resolve_host_ips(hostname: str) -> list[str]:
     return sorted({item[4][0] for item in infos})
 
 
-async def _validate_fetch_url(ctx: RunContext[AgentDeps], url: str, allowed_domains: tuple[str, ...]) -> str:
+def _authority(parsed: ParseResult) -> str:
+    if parsed.port:
+        return f"{parsed.hostname}:{parsed.port}"
+    return parsed.hostname or ""
+
+
+async def _validate_fetch_url(
+    ctx: RunContext[AgentDeps], url: str, allowed_domains: tuple[str, ...]
+) -> tuple[str, str]:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("web_fetch only supports http and https URLs")
@@ -89,9 +98,15 @@ async def _validate_fetch_url(ctx: RunContext[AgentDeps], url: str, allowed_doma
         raise ValueError("web_fetch requires a hostname")
     if not _domain_allowed(parsed.hostname, allowed_domains):
         raise ValueError(f"domain {parsed.hostname} is not allowed")
-    for address in await _resolve_host_ips(parsed.hostname):
+    resolved = await _resolve_host_ips(parsed.hostname)
+    if not resolved:
+        raise ValueError(f"could not resolve {parsed.hostname}")
+    for address in resolved:
         _assert_public_ip(address)
-    return parsed.geturl()
+    # Pin the connection to an IP we just validated. httpx would otherwise
+    # re-resolve the hostname at connect time, which a DNS-rebinding attacker
+    # could point at a private/metadata address after this check passes.
+    return parsed.geturl(), resolved[0]
 
 
 def _extract_text(content_type: str, body: bytes) -> str:
@@ -141,12 +156,16 @@ async def web_fetch(ctx: RunContext[AgentDeps], url: str) -> dict[str, Any]:
     """Fetch a public web page after SSRF, redirect, domain, timeout, and size checks."""
 
     allowed_domains = _configured_domains(ctx, WebIntegration.allowed_domains)
-    current_url = await _validate_fetch_url(ctx, url, allowed_domains)
+    current_url, pinned_ip = await _validate_fetch_url(ctx, url, allowed_domains)
     redirects = 0
     while True:
+        parsed = urlparse(current_url)
+        connect_url = httpx.URL(current_url).copy_with(host=pinned_ip)
         async with ctx.deps.http.stream(
             "GET",
-            current_url,
+            connect_url,
+            headers={"Host": _authority(parsed)},
+            extensions={"sni_hostname": parsed.hostname},
             follow_redirects=False,
             timeout=_TIMEOUT_S,
         ) as response:
@@ -157,7 +176,9 @@ async def web_fetch(ctx: RunContext[AgentDeps], url: str) -> dict[str, Any]:
                 location = response.headers.get("location")
                 if not location:
                     raise RuntimeError("web_fetch received redirect without location")
-                current_url = await _validate_fetch_url(ctx, urljoin(current_url, location), allowed_domains)
+                current_url, pinned_ip = await _validate_fetch_url(
+                    ctx, urljoin(current_url, location), allowed_domains
+                )
                 continue
             response.raise_for_status()
             chunks: list[bytes] = []

@@ -29,6 +29,8 @@ def _content_path(path: str) -> str:
     cleaned = path.strip("/")
     if not cleaned or "\x00" in cleaned:
         raise ValueError("path must be a non-empty repository path")
+    if ".." in cleaned.split("/"):
+        raise ValueError("path must not contain parent directory segments")
     return quote(cleaned, safe="/")
 
 

@@ -99,6 +99,21 @@ async def test_github_get_file_decodes_base64_content() -> None:
 
 
 @pytest.mark.asyncio
+async def test_github_get_file_rejects_path_traversal() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"message": "should not be called"})
+
+    ctx, requests = _deps(handler, SimpleNamespace(github_token=""))
+    try:
+        with pytest.raises(ValueError, match="parent directory"):
+            await get_file(ctx, "owner", "repo", "../../etc/passwd")  # type: ignore[arg-type]
+    finally:
+        await ctx.deps.http.aclose()
+
+    assert requests == []
+
+
+@pytest.mark.asyncio
 async def test_github_write_tools_are_channel_gated() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"message": "should not be called"})
@@ -217,6 +232,35 @@ async def test_web_fetch_extracts_html_and_follows_safe_redirect(monkeypatch: py
     assert result["url"] == "https://docs.example.com/final"
     assert result["text"] == "Hello\nWorld"
     assert result["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_web_fetch_pins_connection_to_validated_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    from henry.integrations.builtins import web
+
+    async def fake_resolve(hostname: str) -> list[str]:
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(web, "_resolve_host_ips", fake_resolve)
+
+    seen: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["connect_host"] = request.url.host
+        seen["host_header"] = request.headers.get("host", "")
+        return httpx.Response(200, headers={"content-type": "text/plain"}, text="ok")
+
+    ctx, _ = _deps(handler, SimpleNamespace(web_allowed_domains=["example.com"]))
+    try:
+        result = await web_fetch(ctx, "https://docs.example.com/page")  # type: ignore[arg-type]
+    finally:
+        await ctx.deps.http.aclose()
+
+    # The connection targets the IP we validated, not a re-resolution an attacker
+    # could rebind; the original hostname is preserved for routing and TLS.
+    assert seen["connect_host"] == "93.184.216.34"
+    assert seen["host_header"] == "docs.example.com"
+    assert result["text"] == "ok"
 
 
 def test_builtin_discover_finds_github_and_web() -> None:
