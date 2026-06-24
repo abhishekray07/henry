@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     web_search_provider: str = "tavily"
     web_search_api_key: str = ""
     litellm_base_url: str = ""
+    litellm_api_key: str = ""
     max_run_usd: float = Field(default=1.00, ge=0)
     sandbox_image: str = "henry-sandbox:base"
 

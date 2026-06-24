@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
 from pydantic_ai import Agent, UsageLimits
-from pydantic_ai.exceptions import ModelAPIError, ToolRetryError, UnexpectedModelBehavior, UsageLimitExceeded
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage as PydanticRunUsage
@@ -22,6 +23,16 @@ DEFAULT_INSTRUCTIONS = (
     "You are Henry, a helpful AI teammate in Slack. Answer clearly, use tools when they are useful, "
     "and keep channel-specific memory separate from model-visible user input."
 )
+
+# Structural tags we use to frame user-visible content. User-controlled text must not be
+# able to forge or close these, or it could break out and inject instructions.
+_RESERVED_TAGS = ("slack_thread", "user_request", "channel_memory", "integrations")
+_RESERVED_TAG_RE = re.compile(r"</?(?:" + "|".join(_RESERVED_TAGS) + r")>", re.IGNORECASE)
+
+
+def _neutralize_delimiters(text: str) -> str:
+    """Escape any reserved framing tags appearing in untrusted text so the model reads them literally."""
+    return _RESERVED_TAG_RE.sub(lambda m: m.group(0).replace("<", "&lt;").replace(">", "&gt;"), text)
 
 
 class PydanticAgentRunner:
@@ -77,8 +88,6 @@ class PydanticAgentRunner:
                 status="budget_exceeded",
                 error=str(exc),
             )
-        except (ModelAPIError, ToolRetryError, UnexpectedModelBehavior) as exc:
-            return _error_result(exc)
         except Exception as exc:
             return _error_result(exc)
 
@@ -91,14 +100,15 @@ class PydanticAgentRunner:
 
     @staticmethod
     def _render_prompt(user_prompt: str, transcript: ConversationTranscript | None) -> str:
+        safe_prompt = _neutralize_delimiters(user_prompt)
         if transcript is None:
-            return user_prompt
+            return safe_prompt
         return (
             "<slack_thread>\n"
-            f"{transcript.render()}\n"
+            f"{_neutralize_delimiters(transcript.render())}\n"
             "</slack_thread>\n\n"
             "<user_request>\n"
-            f"{user_prompt}\n"
+            f"{safe_prompt}\n"
             "</user_request>"
         )
 
