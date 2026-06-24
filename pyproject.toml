@@ -6,9 +6,7 @@ requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 readme = "README.md"
 dependencies = [
-    # NOTE (F1): pin pydantic-ai to an exact version after first resolve (`uv add pydantic-ai`).
-    # Its tool/model API moves across minors — the plan codes against a specific version.
-    "pydantic-ai",
+    "pydantic-ai==2.0.0",
     "slack-bolt>=1.21",
     "sqlalchemy[asyncio]>=2.0",
     "asyncpg>=0.30",
