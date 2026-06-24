@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import os
 import posixpath
 import tarfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from henry.sandbox_types import ExecRequest, ExecResult, SandboxPolicy
 
@@ -14,10 +17,12 @@ try:
     import docker
     from docker.errors import APIError, DockerException, NotFound
     from docker.models.containers import Container
+    from docker.types import Mount
 except ImportError:  # pragma: no cover - dependency is declared by the project
     docker = None  # type: ignore[assignment]
     APIError = DockerException = NotFound = RuntimeError  # type: ignore[misc,assignment]
     Container = Any  # type: ignore[misc,assignment]
+    Mount = Any  # type: ignore[misc,assignment]
 
 
 class SandboxError(RuntimeError):
@@ -43,6 +48,7 @@ class SandboxArchiveError(SandboxError):
 @dataclass
 class _Session:
     container: Container
+    workspace_volume: Any
     policy: SandboxPolicy
     created_at: float
     destroyed: bool = False
@@ -59,7 +65,7 @@ class DockerSandbox:
     ) -> None:
         if docker is None and client is None:  # pragma: no cover - import guard
             raise SandboxError("docker SDK is not installed")
-        self._client = client or docker.from_env()
+        self._client = client or _docker_client_from_env()
         self._sessions: dict[str, _Session] = {}
         self._stdout_limit_bytes = stdout_limit_bytes
         self._file_limit_bytes = file_limit_bytes
@@ -69,29 +75,51 @@ class DockerSandbox:
         if policy.network != "none":
             raise ValueError("V1 sandbox only supports network='none'; fetch external data host-side")
 
-        def _start() -> Container:
+        def _start() -> tuple[Container, Any]:
+            volume_name = f"henry-sandbox-{uuid4().hex}"
+            volume = self._client.volumes.create(
+                name=volume_name,
+                labels={"henry.sandbox": "true", "henry.sandbox.volume": "workspace"},
+            )
             tmpfs = {
-                policy.workdir: "rw,exec,nosuid,size=512m",
                 "/tmp": "rw,noexec,nosuid,size=64m",
             }
-            return self._client.containers.run(
-                policy.image,
-                ["sleep", "infinity"],
-                detach=True,
-                read_only=True,
-                working_dir=policy.workdir,
-                mem_limit=f"{policy.mem_mb}m",
-                nano_cpus=int(policy.cpus * 1_000_000_000),
-                pids_limit=self._pids_limit,
-                network_mode="none",
-                tmpfs=tmpfs,
-                cap_drop=["ALL"],
-                security_opt=["no-new-privileges:true"],
-                labels={"henry.sandbox": "true", "henry.sandbox.created_at": str(time.time())},
-            )
+            try:
+                container = self._client.containers.run(
+                    policy.image,
+                    ["sleep", "infinity"],
+                    detach=True,
+                    read_only=True,
+                    working_dir=policy.workdir,
+                    mem_limit=f"{policy.mem_mb}m",
+                    nano_cpus=int(policy.cpus * 1_000_000_000),
+                    pids_limit=self._pids_limit,
+                    network_mode="none",
+                    tmpfs=tmpfs,
+                    mounts=[
+                        Mount(
+                            target=policy.workdir,
+                            source=volume_name,
+                            type="volume",
+                            read_only=False,
+                        )
+                    ],
+                    cap_drop=["ALL"],
+                    security_opt=["no-new-privileges:true"],
+                    labels={"henry.sandbox": "true", "henry.sandbox.created_at": str(time.time())},
+                )
+            except Exception:
+                volume.remove(force=True)
+                raise
+            return container, volume
 
-        container = await asyncio.to_thread(_start)
-        self._sessions[container.id] = _Session(container=container, policy=policy, created_at=time.time())
+        container, volume = await asyncio.to_thread(_start)
+        self._sessions[container.id] = _Session(
+            container=container,
+            workspace_volume=volume,
+            policy=policy,
+            created_at=time.time(),
+        )
         return str(container.id)
 
     async def exec(self, session: str, req: ExecRequest) -> ExecResult:
@@ -204,12 +232,27 @@ class DockerSandbox:
         state.destroyed = True
 
         def _remove() -> None:
+            # Always attempt volume cleanup, even if container removal fails, so a
+            # transient Docker error does not orphan the workspace volume.
+            container_exc: SandboxError | None = None
             try:
                 state.container.remove(force=force)
             except NotFound:
-                return
+                pass
             except (APIError, DockerException) as exc:
-                raise SandboxError(f"failed to remove sandbox session {session}") from exc
+                container_exc = SandboxError(f"failed to remove sandbox session {session}")
+                container_exc.__cause__ = exc
+
+            try:
+                state.workspace_volume.remove(force=True)
+            except NotFound:
+                pass
+            except (APIError, DockerException) as exc:
+                if container_exc is None:
+                    raise SandboxError(f"failed to remove sandbox workspace volume {session}") from exc
+
+            if container_exc is not None:
+                raise container_exc
 
         await asyncio.to_thread(_remove)
 
@@ -267,3 +310,14 @@ class DockerSandbox:
 
     def _duration_ms(self, started: float) -> int:
         return int((time.monotonic() - started) * 1000)
+
+
+def _docker_client_from_env() -> Any:
+    if os.environ.get("DOCKER_HOST"):
+        return docker.from_env()
+
+    desktop_socket = Path.home() / ".docker" / "run" / "docker.sock"
+    if desktop_socket.exists():
+        return docker.DockerClient(base_url=f"unix://{desktop_socket}")
+
+    return docker.from_env()
