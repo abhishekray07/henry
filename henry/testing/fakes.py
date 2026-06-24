@@ -46,6 +46,12 @@ class FakeMemory:
         ]
         return matches[:k]
 
+    async def get(self, channel_id: str, path: str) -> MemoryItem | None:
+        for item in self._items[channel_id]:
+            if item.path == path:
+                return item
+        return None
+
     async def list_paths(self, channel_id: str) -> list[str]:
         return [item.path for item in self._items[channel_id]]
 
