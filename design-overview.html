@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Open-Source Claude Tag — Design & Architecture</title>
+<style>
+  :root{
+    --ink:#15151f; --slate:#5a5a72; --mute:#8a8aa0; --line:#e7e7ef;
+    --bg:#fbfbfd; --card:#ffffff; --accent:#6d5ef0; --accent-soft:#efedfe;
+    --green:#10916d; --green-soft:#e6f6f0; --amber:#b4751a; --amber-soft:#fbf1df;
+    --blue:#2563c9; --blue-soft:#e7f0fd; --pink:#c0398c; --pink-soft:#fceaf5;
+    --radius:14px; --mono:'SFMono-Regular',ui-monospace,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.62;font-size:16.5px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1140px;margin:0 auto;padding:0 22px;display:grid;grid-template-columns:228px 1fr;gap:46px}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr;gap:0}}
+
+  /* hero */
+  header.hero{background:linear-gradient(135deg,#1a1733,#322a63 60%,#4b3fa0);color:#fff;padding:62px 0 56px}
+  header.hero .inner{max-width:1140px;margin:0 auto;padding:0 22px}
+  .badge{display:inline-block;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.22);
+    color:#e7e3ff;font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;padding:6px 12px;border-radius:999px;margin-bottom:20px}
+  header.hero h1{font-size:42px;line-height:1.1;margin:0 0 14px;font-weight:800;letter-spacing:-.02em}
+  header.hero p.lede{font-size:19px;color:#d9d5f7;max-width:760px;margin:0 0 26px}
+  .pills{display:flex;flex-wrap:wrap;gap:10px}
+  .pill{background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);padding:8px 14px;border-radius:10px;font-size:13.5px;color:#efeeff}
+  .pill b{color:#fff}
+
+  /* nav */
+  nav.toc{position:sticky;top:18px;align-self:start;font-size:14.5px;padding-top:40px}
+  @media(max-width:900px){nav.toc{position:static;padding:18px 0 0;border-bottom:1px solid var(--line);margin-bottom:6px}}
+  nav.toc .lab{font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute);margin:0 0 10px;font-weight:700}
+  nav.toc a{display:block;color:var(--slate);text-decoration:none;padding:6px 10px;border-radius:8px;border-left:2px solid transparent}
+  nav.toc a:hover{background:var(--accent-soft);color:var(--accent)}
+  nav.toc a.active{background:var(--accent-soft);color:var(--accent);border-left-color:var(--accent);font-weight:600}
+
+  main{padding:40px 0 90px;min-width:0}
+  section{margin:0 0 52px;scroll-margin-top:22px}
+  h2{font-size:27px;letter-spacing:-.01em;margin:0 0 6px;font-weight:780}
+  h2 .n{color:var(--accent);font-weight:800;margin-right:10px}
+  .sub{color:var(--slate);margin:0 0 22px;font-size:16px}
+  h3{font-size:18.5px;margin:26px 0 8px;font-weight:700}
+  p{margin:0 0 14px}
+  a.inline{color:var(--accent);text-decoration:none;border-bottom:1px solid #cfc9f7}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px 24px;margin:16px 0;
+    box-shadow:0 1px 2px rgba(20,20,40,.03),0 8px 24px -18px rgba(20,20,40,.18)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  @media(max-width:720px){.grid2,.grid3{grid-template-columns:1fr}}
+  .mini{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 18px}
+  .mini h4{margin:0 0 6px;font-size:16px}
+  .mini p{margin:0;font-size:14.5px;color:var(--slate)}
+  .ico{font-size:22px;display:block;margin-bottom:8px}
+
+  .callout{border-left:4px solid var(--accent);background:var(--accent-soft);padding:14px 18px;border-radius:0 12px 12px 0;margin:16px 0;font-size:15px}
+  .callout.green{border-color:var(--green);background:var(--green-soft)}
+  .callout.amber{border-color:var(--amber);background:var(--amber-soft)}
+  .callout .t{font-weight:700;display:block;margin-bottom:3px}
+  .analogy{font-style:italic;color:var(--slate)}
+
+  code{font-family:var(--mono);font-size:13px;background:#f1f1f7;padding:2px 6px;border-radius:5px;color:#3a3a5a}
+
+  /* pipeline diagram */
+  .flow{display:flex;flex-direction:column;gap:0;margin:18px 0}
+  .step{display:flex;align-items:stretch;gap:0}
+  .node{flex:1;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;gap:14px;align-items:center}
+  .node .tag{font-family:var(--mono);font-size:11px;color:#fff;background:var(--accent);padding:3px 8px;border-radius:6px;white-space:nowrap}
+  .node .body{font-size:14.5px}
+  .node .body b{display:block;font-size:15px;color:var(--ink)}
+  .node .body span{color:var(--slate)}
+  .arrow{display:flex;justify-content:center;color:var(--mute);font-size:20px;line-height:1;padding:7px 0}
+  .side{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:8px}
+  .side .node .tag{background:var(--slate)}
+
+  /* stack */
+  .stack{display:flex;flex-direction:column;gap:8px;margin:16px 0}
+  .layer{border-radius:12px;padding:14px 18px;border:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:14px}
+  .layer b{font-size:15.5px}
+  .layer span{font-size:13.5px;color:var(--slate);text-align:right}
+  .layer.core{background:var(--accent-soft);border-color:#d8d2fb}
+  .layer.int{background:#fff}
+  .layer.gov{background:var(--green-soft);border-color:#bfe6d6}
+
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14.5px}
+  th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--mute);font-weight:700}
+  td b{color:var(--ink)}
+  .yes{color:var(--green);font-weight:700}
+  .no{color:#c0392b;font-weight:700}
+
+  /* use case */
+  .uc{border:1px solid var(--line);border-radius:var(--radius);margin:16px 0;overflow:hidden;background:var(--card)}
+  .uc summary{cursor:pointer;list-style:none;padding:18px 22px;display:flex;align-items:center;gap:14px;font-weight:700;font-size:17px}
+  .uc summary::-webkit-details-marker{display:none}
+  .uc summary .chev{margin-left:auto;color:var(--mute);transition:transform .2s}
+  .uc[open] summary .chev{transform:rotate(90deg)}
+  .uc summary .uci{width:34px;height:34px;border-radius:9px;background:var(--accent-soft);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:18px;flex:none}
+  .uc .ucbody{padding:4px 22px 22px;border-top:1px solid var(--line)}
+  .scenario{color:var(--slate);font-size:15px;margin:14px 0 16px}
+  ol.steps{margin:0;padding:0;list-style:none;counter-reset:s}
+  ol.steps li{counter-increment:s;position:relative;padding:0 0 14px 40px;font-size:14.8px}
+  ol.steps li::before{content:counter(s);position:absolute;left:0;top:-1px;width:26px;height:26px;border-radius:50%;
+    background:var(--accent);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  ol.steps li:not(:last-child)::after{content:"";position:absolute;left:12.5px;top:26px;bottom:2px;width:1.5px;background:#e2def8}
+  .lights{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px}
+  .chip{font-size:12px;background:#f1f1f7;color:var(--slate);padding:5px 10px;border-radius:7px;border:1px solid var(--line)}
+  .chip.on{background:var(--accent-soft);color:var(--accent);border-color:#d8d2fb;font-weight:600}
+  .ph{font-size:11.5px;font-weight:700;padding:3px 9px;border-radius:999px;margin-left:auto}
+  .ph0{background:var(--blue-soft);color:var(--blue)} .ph1{background:var(--accent-soft);color:var(--accent)}
+  .ph2{background:var(--pink-soft);color:var(--pink)} .ph3{background:var(--amber-soft);color:var(--amber)}
+  .ph4{background:var(--green-soft);color:var(--green)}
+
+  /* roadmap */
+  .road{display:flex;flex-direction:column;gap:10px;margin:16px 0}
+  .rstep{display:flex;gap:14px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px}
+  .rstep .pnum{flex:none;width:30px;height:30px;border-radius:8px;background:var(--ink);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;font-size:14px}
+  .rstep b{font-size:15.5px} .rstep p{margin:2px 0 0;font-size:14px;color:var(--slate)}
+
+  dl.gloss{margin:0} dl.gloss div{padding:12px 0;border-bottom:1px solid var(--line);display:grid;grid-template-columns:200px 1fr;gap:18px}
+  @media(max-width:640px){dl.gloss div{grid-template-columns:1fr;gap:2px}}
+  dl.gloss dt{font-weight:700;font-size:14.5px} dl.gloss dd{margin:0;color:var(--slate);font-size:14.5px}
+  footer{color:var(--mute);font-size:13px;text-align:center;padding:30px 0 50px;border-top:1px solid var(--line);margin-top:30px}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="inner">
+    <span class="badge">Design &amp; Architecture · plain-English overview</span>
+    <h1>An open-source, self-hosted Claude Tag</h1>
+    <p class="lede">An AI coworker that lives inside your Slack channels — that you run yourself, point at <em>any</em> AI model, and connect to your own tools. Codename: <b>Henry</b>.</p>
+    <div class="pills">
+      <span class="pill"><b>Run it yourself</b> · self-hosted</span>
+      <span class="pill"><b>Any model</b> · bring-your-own-LLM</span>
+      <span class="pill"><b>Private</b> · your data stays yours</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <nav class="toc" id="toc">
+    <p class="lab">On this page</p>
+    <a href="#what">1 · What it is</a>
+    <a href="#why">2 · Why it's different</a>
+    <a href="#bigpic">3 · The big picture</a>
+    <a href="#stack">4 · Core vs. integrations</a>
+    <a href="#integ">5 · Integrations &amp; secrets</a>
+    <a href="#sandbox">6 · Running code safely</a>
+    <a href="#memory">7 · How memory works</a>
+    <a href="#usecases">8 · Use cases, step by step</a>
+    <a href="#decisions">9 · Key decisions</a>
+    <a href="#roadmap">10 · Build roadmap</a>
+    <a href="#glossary">11 · Plain-English glossary</a>
+  </nav>
+
+  <main>
+
+  <!-- 1 -->
+  <section id="what">
+    <h2><span class="n">1</span>What we're building</h2>
+    <p class="sub">A teammate you @mention in Slack, that does real work and remembers your team.</p>
+    <p>Anthropic just launched <b>Claude Tag</b>: you type <code>@Claude</code> in a Slack channel and hand it a task. It works in the thread where everyone can watch, remembers the channel over time, can jump in on its own, and can keep working on something for hours. It's like hiring a coworker who lives in Slack.</p>
+    <p>The catch: Claude Tag only runs on Anthropic's servers, only uses Anthropic's models, and reads all your Slack messages on someone else's computer. <b>We're building the open version of the same idea</b> — one you install and run yourself.</p>
+    <div class="callout"><span class="t">The one-sentence version</span>
+      A Slack bot that, when tagged, runs an AI "agent" with access to your tools, keeps a memory for each channel, and can act on its own — all on infrastructure you control, with whatever AI model you choose.</div>
+    <p class="analogy">Think of it like the difference between renting a coworker from an agency (Claude Tag) and hiring your own that sits at a desk in your own office (this project). Same job — but you hold the keys.</p>
+  </section>
+
+  <!-- 2 -->
+  <section id="why">
+    <h2><span class="n">2</span>Why ours is different (the "wedge")</h2>
+    <p class="sub">Three things the official Claude Tag can't do — and our whole reason to exist.</p>
+    <div class="grid3">
+      <div class="mini"><span class="ico">🏠</span><h4>Self-hosted</h4><p>Runs on your own server or laptop. Your Slack messages and data never leave machines you control. Answers the fear: "I don't want a third party reading everything."</p></div>
+      <div class="mini"><span class="ico">🔌</span><h4>Any model</h4><p>Plug in Claude, GPT, Gemini, Llama, or a local model — and switch anytime. You're never locked to one AI vendor or their pricing.</p></div>
+      <div class="mini"><span class="ico">🔍</span><h4>Open &amp; auditable</h4><p>Open source. You can see exactly what it does, scope what each channel can touch, and keep a full log of who asked for what.</p></div>
+    </div>
+    <div class="callout green"><span class="t">Where this came from</span>
+      We're growing it out of an existing bot ("Henry") that already lives in one Slack channel and investigates customer-support bugs. That bot is already ~60% of the machinery — we're generalizing it. We also studied <b>getsentry/junior</b> (an open-source, plugin-based Claude Tag by Sentry) for its architecture, and got a second opinion from a different AI (Codex) on the big calls.</p></div>
+  </section>
+
+  <!-- 3 -->
+  <section id="bigpic">
+    <h2><span class="n">3</span>The big picture: what happens when you tag it</h2>
+    <p class="sub">Follow one Slack message through the system. Each box is a stage; the data flows top to bottom.</p>
+
+    <div class="flow">
+      <div class="step"><div class="node"><span class="tag">Slack</span><div class="body"><b>The front door</b><span>A message arrives. We use Slack's official toolkit (Bolt). The bot sees every message in channels it's in.</span></div></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="node"><span class="tag">Gate</span><div class="body"><b>"Should I act?"</b><span>A cheap, fast check. Tagged directly → yes. Otherwise a small model decides if it's worth jumping in (this powers the proactive mode). Most messages are ignored — on purpose.</span></div></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="node"><span class="tag">Orchestrator</span><div class="body"><b>Set up the workspace</b><span>Locks the channel so two requests don't collide, loads that channel's <em>identity</em> (its instructions + which tools it may use), and loads its <em>memory</em>.</span></div></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="node"><span class="tag">Agent</span><div class="body"><b>The thinking loop</b><span>The AI plans, calls tools, reads results, repeats — until the task is done. Built on Pydantic AI; the model is supplied through LiteLLM so it can be <em>any</em> LLM.</span></div></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="node"><span class="tag">Integrations</span><div class="body"><b>The hands</b><span>The tools the agent can use — GitHub, your ticket system, logs, etc. Credentials are attached here by the host, never shown to the AI.</span></div></div></div>
+      <div class="arrow">↑↓</div>
+      <div class="step"><div class="node"><span class="tag">Slack</span><div class="body"><b>Back to the thread</b><span>The answer (or progress updates) post into the same Slack thread, visible to the whole team.</span></div></div></div>
+    </div>
+
+    <p>Two helpers sit alongside this pipeline and are part of the product, not add-ons:</p>
+    <div class="side">
+      <div class="node"><span class="tag">Memory</span><div class="body"><b>Per-channel memory</b><span>A small, growing notebook for each channel (facts learned, work done, open tasks), stored in a database.</span></div></div>
+      <div class="node"><span class="tag">Scheduler</span><div class="body"><b>Durable tasks</b><span>A to-do list of future/long work so the agent can keep going over hours or days and survive restarts.</span></div></div>
+    </div>
+    <div class="callout amber"><span class="t">Wrapping everything: Governance</span>
+      Spending limits per channel/company, an audit log of every action, and rules for which channel can use which tools. This is what makes it safe to give a whole company.</div>
+  </section>
+
+  <!-- 4 -->
+  <section id="stack">
+    <h2><span class="n">4</span>Core vs. integrations</h2>
+    <p class="sub">The most important architecture decision: what's built-in forever vs. what plugs in.</p>
+    <p>We split the system into a <b>core</b> that we own and ship, and an <b>integration layer</b> for connecting tools. The agent's <em>abilities</em> (memory, scheduling, jumping in) are core — they ARE the product. The <em>tools</em> (GitHub, Linear…) are pluggable.</p>
+    <div class="stack">
+      <div class="layer gov"><b>🛡️ Governance</b><span>spend caps · audit log · per-channel tool permissions</span></div>
+      <div class="layer core"><b>🧠 Core capabilities</b><span>Slack identity &amp; routing · per-channel memory · scheduler/durable tasks · proactive "gate" · permissions</span></div>
+      <div class="layer core"><b>⚙️ Agent runtime</b><span>Pydantic AI loop · LiteLLM (any model) · credential store · private OAuth</span></div>
+      <div class="layer int"><b>🔌 Integration layer</b><span>a simple internal "Integration" contract — tools plug in behind it</span></div>
+      <div class="layer int"><b>🧰 Tools</b><span>GitHub · ticket system · logs · MCP servers · your own Python functions</span></div>
+    </div>
+    <div class="callout"><span class="t">Why not just copy Sentry's "plugins"?</span>
+      Sentry's junior makes <em>everything</em> a formal plugin (even memory). That's great once you have many integrations and outside contributors. We're not there yet, so for now we use a lightweight <b>internal</b> Integration contract — the same "seam," without the heavy public plugin format. We graduate to full plugins later, when we actually need them. <em>(This was the key takeaway from the Codex second opinion.)</em></div>
+  </section>
+
+  <!-- 5 -->
+  <section id="integ">
+    <h2><span class="n">5</span>Integrations &amp; secrets — the part that matters most</h2>
+    <p class="sub">How the bot uses your tools without ever leaking your passwords.</p>
+
+    <h3>What an "integration" is</h3>
+    <p>An integration bundles three things: <b>(1)</b> what it can do (the tools, e.g. "search GitHub code"), <b>(2)</b> how it logs in (the credentials/OAuth), and <b>(3)</b> a short instruction snippet telling the AI how to use it well. A strict rule keeps these clean: the <b>instructions never handle passwords</b>, and the <b>passwords never reach the AI</b>.</p>
+
+    <h3>The golden security rule</h3>
+    <div class="callout green"><span class="t">Secrets are never shown to the AI model.</span>
+      The AI says <em>"call the GitHub search tool with this query."</em> The host program — your code — is the one that actually attaches the GitHub token and makes the call. The token is never put in the prompt, the tool's inputs, the results it sees, or the logs. The AI gets the answer, never the key.</div>
+    <p>Codex's sharp warning, which we're taking to heart: there's a difference between <b>"the secret isn't sent to the AI"</b> (what we do — and it's enough for privacy) and <b>"the secret is impossible for any tool code to read"</b> (a much heavier setup with sandboxes that we'll only add later, for untrusted plugins). We're careful not to over-promise the second.</p>
+
+    <h3>Connecting your account: private, pause-and-resume</h3>
+    <p>The slickest idea we're borrowing from Sentry's junior. Say you ask the bot to do something in Linear but you've never connected Linear:</p>
+    <div class="flow">
+      <div class="step"><div class="node"><span class="tag">1</span><div class="body"><span>You: "@Claude, file this as a Linear ticket."</span></div></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="node"><span class="tag">2</span><div class="body"><span>Bot notices there's no Linear connection. It <b>pauses</b> the task and <b>direct-messages you a private login link</b> (never posted in the public channel).</span></div></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="node"><span class="tag">3</span><div class="body"><span>You click it, approve access. The token is stored safely on the host, tied to <em>your</em> identity.</span></div></div></div>
+      <div class="arrow">↓</div>
+      <div class="step"><div class="node"><span class="tag">4</span><div class="body"><span>The bot <b>resumes the paused task automatically</b> and posts the finished ticket in the thread.</span></div></div></div>
+    </div>
+
+    <h3>Why not Composio, and why not real CLIs</h3>
+    <div class="grid2">
+      <div class="mini"><h4>No Composio (for the core)</h4><p>Composio is a hosted service that holds your logins and runs your tool calls on <em>their</em> cloud. That breaks our "self-hosted, private" promise (and they had a breach). We use the open standard (MCP) + our own tools instead, and may offer Composio as an <em>optional</em> add-on later.</p></div>
+      <div class="mini"><h4>No real command-line tools</h4><p>Junior runs real CLIs (like <code>gh</code>) in a sandbox. Powerful, but heavy and fiddly. For a chat teammate, plain API/function tools are simpler, safer, and fit our Python stack — so that's what we use.</p></div>
+    </div>
+  </section>
+
+  <!-- 6 -->
+  <section id="sandbox">
+    <h2><span class="n">6</span>Running code safely (the sandbox)</h2>
+    <p class="sub">Two kinds of "doing" — and only one needs a locked room.</p>
+    <p>The bot does real work, not just lookups. But "doing" splits in two, with very different safety needs:</p>
+    <div class="grid2">
+      <div class="mini"><h4>🎫 Taking actions in other apps</h4><p>Open a GitHub PR, create a Linear ticket, post a message. The bot fills in a form and <em>our</em> code presses the app's official button. It isn't running its own program — so the safety control is <b>permissions</b> (which buttons it may press), not a sandbox.</p></div>
+      <div class="mini"><h4>🧪 Running its own code</h4><p>Write a script and run it, run the test suite, crunch a data file. Now the bot is driving a computer and could do anything — so this happens inside a <b>sandbox</b>: a sealed, throwaway computer that can't touch your real files or other teams' data.</p></div>
+    </div>
+    <div class="callout"><span class="t">The "create a PR" example, both ways</span>
+      <b>Quick:</b> the bot writes the change as text and our code pushes it through GitHub's API — no sandbox needed. <b>Good:</b> the bot checks out the repo, edits files, and <em>runs the tests to confirm the fix works</em> before opening the PR — that needs the sandbox. Once we want the bot to verify its own work, the room is in.</div>
+    <h3>The room is swappable — pick your trade-off</h3>
+    <div class="stack">
+      <div class="layer core"><b>🪶 Lightweight built-in (default)</b><span>runs on a laptop, no extra setup · model-agnostic · our pick for "just run it"</span></div>
+      <div class="layer int"><b>🏢 Managed: E2B · Daytona · Modal</b><span>strongest isolation, scales itself, GPU — flip on with one config change</span></div>
+    </div>
+    <div class="callout green"><span class="t">Why a built-in default — and not force E2B / Daytona / Modal</span>
+      Those are excellent strong rooms and fully supported — but they're mostly <em>cloud</em> services. Forcing one would quietly break our "runs on your own box, data stays yours" promise. So the default is a tiny built-in room that needs nothing; teams who want managed power switch with one line. Same pluggable idea as the AI model and the tools.</div>
+  </section>
+
+  <!-- 7 -->
+  <section id="memory">
+    <h2><span class="n">7</span>How memory works</h2>
+    <p class="sub">Each channel gets its own memory — and that's what makes handoffs and "it remembers us" possible.</p>
+    <p>For every channel we keep two simple things in a database:</p>
+    <div class="grid2">
+      <div class="mini"><h4>📒 The memory notebook</h4><p>A growing document of what the bot has learned in this channel — durable facts, a running summary of work done, and open tasks. The AI reads and updates it as it works.</p></div>
+      <div class="mini"><h4>⚡ The quick snapshot</h4><p>A tidy summary we paste into the AI's instructions at the start of every turn, so it has context immediately — before it even opens the notebook.</p></div>
+    </div>
+    <p>Crucially, this is done in a <b>model-agnostic</b> way: instead of Anthropic's special memory feature (which only works with Claude), we give the AI plain "read memory / write memory" tools that <em>any</em> model can use. We start simple (no fancy search database) because a single channel's notes easily fit in the AI's context. We only add heavier search later if a channel's memory grows huge.</p>
+    <div class="callout amber"><span class="t">The thing we must get right</span>
+      Keeping channels separate. Channel A must never read Channel B's memory. Every memory access is strictly fenced to its own channel — get this wrong and private info leaks across teams.</div>
+  </section>
+
+  <!-- 8 -->
+  <section id="usecases">
+    <h2><span class="n">8</span>Use cases, step by step</h2>
+    <p class="sub">How real situations actually play out. Click any to expand. The tag shows which build phase unlocks it.</p>
+
+    <details class="uc" open>
+      <summary><span class="uci">💬</span> Ask it anything in any channel <span class="ph ph0">Phase 0</span><span class="chev">›</span></summary>
+      <div class="ucbody">
+        <p class="scenario">In <code>#payments</code>, an engineer types: "@Claude what changed in the refund flow last week?"</p>
+        <ol class="steps">
+          <li>Slack delivers the message; the bot sees it's a direct tag → the Gate says "act."</li>
+          <li>The Orchestrator loads <code>#payments</code>'s identity (its instructions + allowed tools) and its memory snapshot.</li>
+          <li>The agent reads the thread, calls the GitHub tool to list recent commits to the refund code, and reads the relevant files.</li>
+          <li>It posts a plain-English summary back into the thread. Everyone in the channel can see it.</li>
+        </ol>
+        <div class="lights"><span class="chip on">Slack</span><span class="chip on">Gate</span><span class="chip on">Agent</span><span class="chip on">Integrations</span><span class="chip">Memory</span></div>
+      </div>
+    </details>
+
+    <details class="uc">
+      <summary><span class="uci">🐞</span> Triage a customer-support bug (the flagship) <span class="ph ph0">Phase 0</span><span class="chev">›</span></summary>
+      <div class="ucbody">
+        <p class="scenario">A bug report lands in <code>#support</code>: "Customer X can't load their asset list." Someone tags @Claude. <em>(This is what Henry already does today — we're just generalizing it.)</em></p>
+        <ol class="steps">
+          <li>The agent pulls the full ticket from the help-desk tool (error messages, screenshots, the customer's account ID).</li>
+          <li>It searches the session-replay tool for that user's failing requests around the error time.</li>
+          <li>It searches the GitHub codebase for the code path behind the failing request and reads it.</li>
+          <li>It lines up the timeline, identifies the likely root cause, and posts a clear investigation summary in the thread — with file links.</li>
+        </ol>
+        <div class="lights"><span class="chip on">Agent</span><span class="chip on">Integrations</span><span class="chip">Help-desk</span><span class="chip">GitHub</span><span class="chip">Logs</span></div>
+      </div>
+    </details>
+
+    <details class="uc">
+      <summary><span class="uci">🤝</span> Hand off a half-finished task to a teammate <span class="ph ph1">Phase 1 · memory</span><span class="chev">›</span></summary>
+      <div class="ucbody">
+        <p class="scenario">Alice asks @Claude to investigate a flaky test, then logs off. Two hours later Bob picks it up in the same channel.</p>
+        <ol class="steps">
+          <li>While working for Alice, the agent writes what it found into the channel's memory notebook (the cause it suspects, what it ruled out, what's left).</li>
+          <li>Bob types: "@Claude where did you get to on that flaky test?"</li>
+          <li>The Orchestrator loads the same channel memory — so the agent already knows the full story. Bob doesn't re-explain anything.</li>
+          <li>The agent continues from where it left off and posts the next step. Because everyone shares one bot per channel, the handoff is seamless.</li>
+        </ol>
+        <div class="lights"><span class="chip on">Memory</span><span class="chip on">Orchestrator</span><span class="chip on">Multiplayer</span><span class="chip on">Agent</span></div>
+      </div>
+    </details>
+
+    <details class="uc">
+      <summary><span class="uci">🔔</span> Jump in on its own (proactive / ambient) <span class="ph ph2">Phase 2 · ambient</span><span class="chev">›</span></summary>
+      <div class="ucbody">
+        <p class="scenario">A customer question sits unanswered in <code>#support</code> for a day, then someone says "any update?" — but the original owner is out.</p>
+        <ol class="steps">
+          <li>The bot is reading every message (it already does), but normally stays silent.</li>
+          <li>The Gate's small, cheap model flags this thread as "stalled, has an open question" — worth a nudge.</li>
+          <li>To avoid being annoying, it checks a cooldown (it won't nudge the same thread repeatedly) and that ambient mode is switched on for this channel.</li>
+          <li>It posts a gentle <b>notify</b>: "This thread's been waiting a day — here's a draft answer from our docs, want me to send it?" It suggests; a human approves.</li>
+        </ol>
+        <div class="lights"><span class="chip on">Gate</span><span class="chip on">Ambient</span><span class="chip on">Cooldown</span><span class="chip on">Memory</span></div>
+      </div>
+    </details>
+
+    <details class="uc">
+      <summary><span class="uci">⏳</span> Keep working over hours (or on a schedule) <span class="ph ph3">Phase 3 · scheduler</span><span class="chev">›</span></summary>
+      <div class="ucbody">
+        <p class="scenario">"@Claude every morning at 9am, summarize overnight errors and post them here." Or: "keep monitoring this incident and update me as it changes."</p>
+        <ol class="steps">
+          <li>The agent writes a <b>durable task</b> into the scheduler's to-do list in the database (not just held in memory).</li>
+          <li>A background worker wakes up on schedule — and this survives the app restarting, unlike a quick one-off job.</li>
+          <li>Each run loads the channel's memory, does the work (e.g., query the error tool), and posts an update.</li>
+          <li>For long jobs, the agent can even schedule its own follow-up steps and continue across hours or days.</li>
+        </ol>
+        <div class="lights"><span class="chip on">Scheduler</span><span class="chip on">Durable tasks</span><span class="chip on">Memory</span><span class="chip on">Agent</span></div>
+      </div>
+    </details>
+
+    <details class="uc">
+      <summary><span class="uci">🔐</span> Connect a new tool, safely <span class="ph ph4">Phase 4 · governance</span><span class="chev">›</span></summary>
+      <div class="ucbody">
+        <p class="scenario">An admin wants the <code>#growth</code> channel's bot to be able to read (but not write) the analytics warehouse, and nothing else.</p>
+        <ol class="steps">
+          <li>The admin enables the "analytics" integration <b>only for <code>#growth</code></b>, read-only, in that channel's identity/config.</li>
+          <li>First time the agent uses it, it triggers the private OAuth flow (DM a login link, pause, resume) tied to the requesting person.</li>
+          <li>Every call is checked against the channel's permissions and recorded in the audit log: who asked, what ran, what it cost.</li>
+          <li>If the channel hits its spending cap, the bot stops and tells the admin — no surprise bills.</li>
+        </ol>
+        <div class="lights"><span class="chip on">Governance</span><span class="chip on">Per-channel scoping</span><span class="chip on">Private OAuth</span><span class="chip on">Audit log</span><span class="chip on">Spend caps</span></div>
+      </div>
+    </details>
+  </section>
+
+  <!-- 9 -->
+  <section id="decisions">
+    <h2><span class="n">9</span>Key decisions (and why)</h2>
+    <p class="sub">The choices we've locked, in one place.</p>
+    <table>
+      <tr><th>Decision</th><th>Choice</th><th>Why</th></tr>
+      <tr><td><b>The wedge</b></td><td>Self-hosted + any model + private</td><td>The official Claude Tag can't offer these. It's our reason to exist.</td></tr>
+      <tr><td><b>Foundation</b></td><td>Grow the existing "Henry" bot (Python)</td><td>It's already ~60% there and aimed at the flagship use case. No rewrite.</td></tr>
+      <tr><td><b>AI engine</b></td><td>Pydantic AI + LiteLLM</td><td>Pydantic AI runs the agent in Python; LiteLLM lets us use <em>any</em> model. Replaces the Claude-only toolkit.</td></tr>
+      <tr><td><b>Memory</b></td><td>Plain "read/write memory" tools + a database</td><td>Works with any model (not Claude-only). Simple now; can scale later.</td></tr>
+      <tr><td><b>Integrations</b></td><td>Internal "Integration" contract now; formal plugins later</td><td>Get the clean seam without heavy ceremony. Graduate when we have many tools / outside contributors.</td></tr>
+      <tr><td><b>Secrets</b></td><td>Host attaches them; never shown to the AI</td><td>Delivers the privacy promise. (Full sandbox isolation is a later, optional add-on.)</td></tr>
+      <tr><td><b>Integration platform</b></td><td>Open standard (MCP) + our own tools — <span class="no">not</span> Composio</td><td>A hosted middleman holding your logins breaks "self-hosted &amp; private."</td></tr>
+      <tr><td><b>Memory &amp; scheduler</b></td><td>Built-in core, <span class="no">not</span> plugins</td><td>They're the product, not optional accessories. <em>(Codex's call, and we agree.)</em></td></tr>
+      <tr><td><b>Taking actions</b></td><td>Permissioned tools (open PRs, create tickets) — no sandbox</td><td>Filling in a form via an app's official API is governed by permissions, not a code sandbox.</td></tr>
+      <tr><td><b>Running code</b></td><td>Pluggable sandbox; lightweight built-in default, E2B / Daytona / Modal optional</td><td>Running AI-written code needs a locked room. Light default keeps "runs on a laptop"; managed rooms swap in for scale.</td></tr>
+    </table>
+  </section>
+
+  <!-- 10 -->
+  <section id="roadmap">
+    <h2><span class="n">10</span>Build roadmap</h2>
+    <p class="sub">Each phase is useful on its own. We ship in this order.</p>
+    <div class="road">
+      <div class="rstep"><span class="pnum">0</span><div><b>Works in any channel + any model</b><p>Move off the Claude-only toolkit to Pydantic AI + LiteLLM. Drop the single-channel limit. Put tools behind the Integration contract. <span style="color:var(--blue);font-weight:600">← our V1 starts here</span></p></div></div>
+      <div class="rstep"><span class="pnum">1</span><div><b>Per-channel memory</b><p>Add the database, the memory notebook + snapshot, and the read/write-memory tools. Unlocks "it remembers us" and seamless handoffs. <span style="color:var(--accent);font-weight:600">← V1 ends here</span></p></div></div>
+      <div class="rstep"><span class="pnum" style="background:var(--accent)">▶</span><div><b>Sandboxed "run code" tool (core)</b><p>Give the bot a locked room so it can run code — test a fix, run a query — using the lightweight built-in sandbox, swappable to E2B / Daytona / Modal.</p></div></div>
+      <div class="rstep"><span class="pnum">2</span><div><b>Proactive / ambient mode</b><p>The cheap Gate, notify-only behavior, cooldowns, and follow-ups on forgotten threads.</p></div></div>
+      <div class="rstep"><span class="pnum">3</span><div><b>Durable, scheduled tasks</b><p>A real to-do list in the database + a background worker, so the bot can work over hours/days and survive restarts.</p></div></div>
+      <div class="rstep"><span class="pnum">4</span><div><b>Governance &amp; multiplayer polish</b><p>Per-channel/company spend caps, audit log, tool scoping, and the connect/disconnect admin surface.</p></div></div>
+    </div>
+  </section>
+
+  <!-- 11 -->
+  <section id="glossary">
+    <h2><span class="n">11</span>Plain-English glossary</h2>
+    <p class="sub">Every bit of jargon used above, in one line each.</p>
+    <dl class="gloss">
+      <div><dt>Agent</dt><dd>An AI that doesn't just chat — it plans, uses tools, reads the results, and repeats until a task is done.</dd></div>
+      <div><dt>Agent loop</dt><dd>That plan → act → observe → repeat cycle the agent runs.</dd></div>
+      <div><dt>Tool</dt><dd>An action the AI can take — "search GitHub," "read this ticket," "query the database."</dd></div>
+      <div><dt>Pydantic AI</dt><dd>The Python library that runs our agent loop. Works with any model.</dd></div>
+      <div><dt>LiteLLM</dt><dd>A translator that lets one piece of code talk to 100+ AI models the same way — our "any model" layer.</dd></div>
+      <div><dt>MCP</dt><dd>"Model Context Protocol" — an open standard for plugging external tools into AI agents. Vendor-neutral.</dd></div>
+      <div><dt>Slack Bolt</dt><dd>Slack's official toolkit for building bots. Handles incoming messages and posting replies.</dd></div>
+      <div><dt>The Gate</dt><dd>A cheap, fast filter that decides whether the bot should respond — especially for unprompted (ambient) replies.</dd></div>
+      <div><dt>Ambient / proactive</dt><dd>The bot acting on its own — flagging things, nudging stalled threads — without being tagged.</dd></div>
+      <div><dt>Per-channel memory</dt><dd>A separate, growing notebook of facts and tasks for each Slack channel.</dd></div>
+      <div><dt>Multiplayer</dt><dd>One shared bot per channel that everyone talks to — so anyone can pick up where someone else left off.</dd></div>
+      <div><dt>Durable task</dt><dd>A job saved in the database so it survives restarts and can run later or for a long time.</dd></div>
+      <div><dt>Sandbox ("locked room")</dt><dd>A sealed, throwaway computer where the bot can run code safely — it can't touch your real files or other teams' data.</dd></div>
+      <div><dt>Taking actions vs. running code</dt><dd>Pressing an app's official button via its API (a ticket, a PR) is "taking an action" — guarded by permissions. Writing and running a program is "running code" — guarded by the sandbox.</dd></div>
+      <div><dt>OAuth</dt><dd>The standard "Log in with…" approval flow. Lets the bot act as you on a tool without ever seeing your password.</dd></div>
+      <div><dt>Integration</dt><dd>A bundle of a tool + how it logs in + a hint on how to use it. Our pluggable unit.</dd></div>
+      <div><dt>Governance</dt><dd>The safety controls: spending limits, audit logs, and which channel may use which tools.</dd></div>
+      <div><dt>Self-hosted</dt><dd>You run it on your own computers, so your data never leaves your control.</dd></div>
+    </dl>
+  </section>
+
+  </main>
+</div>
+
+<footer>
+  Design overview · open-source Claude Tag (codename Henry) · built on Slack Bolt + Pydantic AI + LiteLLM · informed by getsentry/junior &amp; a Codex second opinion
+</footer>
+
+<script>
+  // Highlight the current section in the side nav. Wrapped so a failure never breaks the page.
+  try {
+    var links = Array.prototype.slice.call(document.querySelectorAll('nav.toc a'));
+    var map = {};
+    links.forEach(function(a){ map[a.getAttribute('href').slice(1)] = a; });
+    var obs = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){
+        if(e.isIntersecting){
+          links.forEach(function(a){ a.classList.remove('active'); });
+          if(map[e.target.id]) map[e.target.id].classList.add('active');
+        }
+      });
+    }, { rootMargin: '-20% 0px -70% 0px', threshold: 0 });
+    document.querySelectorAll('main section').forEach(function(s){ obs.observe(s); });
+  } catch (err) { /* no-op */ }
+</script>
+</body>
+</html>
