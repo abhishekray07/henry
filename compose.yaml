@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: henry
       POSTGRES_DB: henry
     ports:
-      - "5432:5432"
+      - "${HENRY_DB_PORT:-5432}:5432"
     volumes:
       - henrydb:/var/lib/postgresql/data
     healthcheck:
