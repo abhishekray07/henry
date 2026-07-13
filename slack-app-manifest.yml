@@ -1,0 +1,34 @@
+# Henry — Slack app manifest
+# Create the app: https://api.slack.com/apps → "Create New App" → "From a manifest"
+# → pick your workspace → paste this. Then:
+#   1. Install to Workspace (OAuth & Permissions) → copy the Bot User OAuth Token (xoxb-…)
+#      → HENRY_SLACK_BOT_TOKEN in .env
+#   2. Basic Information → App-Level Tokens → Generate a token with scope `connections:write`
+#      (xapp-…) → HENRY_SLACK_APP_TOKEN in .env
+#   3. Invite the bot to your test channels: /invite @Henry
+display_information:
+  name: Henry
+  description: Open-source, self-hosted, model-agnostic AI teammate
+  background_color: "#1a1733"
+features:
+  bot_user:
+    display_name: Henry
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read   # receive @Henry mentions
+      - chat:write          # post + update replies in the thread
+      - channels:history    # read public-channel thread messages (transcript)
+      - channels:read       # channel metadata
+      - groups:history      # private-channel thread messages
+      - groups:read         # private-channel metadata
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
