@@ -65,7 +65,8 @@ async def dispatch_app_mention(
         thread_ts=event.thread_ts,
         text="Working on it...",
     )
-    placeholder_ts = str(placeholder.get("ts") if isinstance(placeholder, dict) else "")
+    # slack_sdk returns an AsyncSlackResponse (mapping-like, not a dict subclass)
+    placeholder_ts = str(placeholder.get("ts") or "")
     return asyncio.create_task(
         _run_and_update_slack(
             event=event,
