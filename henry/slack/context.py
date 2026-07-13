@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from henry.contracts import SlackEvent
@@ -9,7 +9,9 @@ from henry.types import ConversationTranscript, ThreadMessage
 DEFAULT_SLACK_CHUNK_LIMIT = 3900
 
 
-def _messages_from_replies(replies: Mapping[str, Any] | Sequence[Mapping[str, Any]]) -> Sequence[Mapping[str, Any]]:
+def _messages_from_replies(
+    replies: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+) -> Sequence[Mapping[str, Any]]:
     if isinstance(replies, Mapping):
         messages = replies.get("messages", ())
         if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
@@ -47,6 +49,30 @@ def build_transcript(
             )
         )
     return ConversationTranscript(channel_id=channel_id, thread_ts=thread_ts, messages=tuple(messages))
+
+
+def make_transcript_fetcher(
+    client: Any,
+    *,
+    bot_user_id: str | None = None,
+    limit: int = 200,
+) -> Callable[[SlackEvent], Awaitable[ConversationTranscript]]:
+    """Build a transcript fetcher that reads the full thread via conversations.replies."""
+
+    async def fetch(event: SlackEvent) -> ConversationTranscript:
+        replies = await client.conversations_replies(
+            channel=event.channel_id,
+            ts=event.thread_ts,
+            limit=limit,
+        )
+        return build_transcript(
+            channel_id=event.channel_id,
+            thread_ts=event.thread_ts,
+            replies=replies.get("messages") or (),
+            bot_user_id=bot_user_id,
+        )
+
+    return fetch
 
 
 def build_slack_event(body: Mapping[str, Any]) -> SlackEvent:

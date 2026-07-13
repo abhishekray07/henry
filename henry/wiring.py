@@ -8,13 +8,18 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from henry.agent.runner import PydanticAgentRunner
 from henry.config.registry import ResolvedConfig, load_channel_config
-from henry.contracts import AgentDeps, SlackEvent
+from henry.contracts import AgentDeps, AgentRunner, SlackEvent
 from henry.db.session import make_engine, make_sessionmaker
 from henry.integrations.registry import discover
 from henry.interfaces import Integration, Sandbox
 from henry.memory.postgres import PostgresMemory
 from henry.orchestrator.locks import ThreadLocks
-from henry.orchestrator.runner import ProcessedEventDeduper, handle_request, make_db_audit_sink
+from henry.orchestrator.runner import (
+    ProcessedEventDeduper,
+    TranscriptFetcher,
+    handle_request,
+    make_db_audit_sink,
+)
 from henry.sandbox.docker import DockerSandbox
 from henry.sandbox.tools import clear_sandbox_session
 from henry.settings import Settings, get_settings
@@ -57,7 +62,8 @@ class HenryRuntime:
     sandbox: Sandbox
     integrations: dict[str, Integration]
     locks: ThreadLocks
-    runner: PydanticAgentRunner
+    runner: AgentRunner
+    transcript_fetcher: TranscriptFetcher | None = None
 
     @property
     def deduper(self) -> ProcessedEventDeduper:
@@ -91,6 +97,7 @@ class HenryRuntime:
             deps_factory=self.deps_factory,
             locks=self.locks,
             config_loader=self.load_config,
+            transcript_fetcher=self.transcript_fetcher,
             audit_sink=make_db_audit_sink(self.sessionmaker),
             cleanup=self.cleanup,
         )

@@ -4,7 +4,18 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Index, MetaData, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Index,
+    Integer,
+    MetaData,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import JSON
@@ -50,8 +61,12 @@ class ChannelMemory(Base):
     path: Mapped[str] = mapped_column(String(512), primary_key=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(String(64), default="fact", nullable=False)
-    item_metadata: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB_TYPE, default=dict, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    item_metadata: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB_TYPE, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -82,7 +97,10 @@ class Task(Base):
         Index("ix_task_status_run_at", "status", "run_at"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # SQLite only autoincrements INTEGER primary keys, so give it a dialect variant
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
     channel_id: Mapped[str] = mapped_column(String(128), nullable=False)
     thread_ts: Mapped[str] = mapped_column(String(64), nullable=False)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -96,7 +114,10 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
     __table_args__ = (Index("ix_audit_log_channel_id_ts", "channel_id", "ts"),)
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # SQLite only autoincrements INTEGER primary keys, so give it a dialect variant
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
     run_id: Mapped[str] = mapped_column(String(128), nullable=False)
     channel_id: Mapped[str] = mapped_column(String(128), nullable=False)
     thread_ts: Mapped[str] = mapped_column(String(64), nullable=False)
