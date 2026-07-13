@@ -1,5 +1,5 @@
 {
-  "model": "anthropic:claude-sonnet-4-6",
+  "model": "",
   "enabled_integrations": [],
   "system_prompt": "You are Henry, a helpful AI teammate working in Slack.",
   "ambient_on": false,

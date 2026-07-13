@@ -21,10 +21,9 @@ class ResolvedConfig(BaseModel):
 
     @field_validator("model")
     @classmethod
-    def validate_model(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("model must be non-empty")
-        return value
+    def normalize_model(cls, value: str) -> str:
+        # Empty means "no channel override": RunSettings falls back to HENRY_DEFAULT_MODEL.
+        return value.strip()
 
 
 def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:

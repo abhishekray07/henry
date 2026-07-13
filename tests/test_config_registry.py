@@ -82,8 +82,9 @@ async def test_unknown_integrations_are_rejected() -> None:
         await load_channel_config(FakeSession(row), "C123", known_integrations={"github"})
 
 
-async def test_empty_model_is_rejected() -> None:
+async def test_empty_model_resolves_to_empty_and_defers_to_runtime_default() -> None:
     row = {"channel_id": "C123", "model": " "}
 
-    with pytest.raises(ValidationError, match="model must be non-empty"):
-        await load_channel_config(FakeSession(row), "C123")
+    resolved = await load_channel_config(FakeSession(row), "C123")
+
+    assert resolved.model == ""
