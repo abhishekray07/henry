@@ -110,3 +110,15 @@ async def test_aclose_is_idempotent_and_safe_when_never_connected() -> None:
     integration.toolset()
     await integration.aclose()
     await integration.aclose()
+
+
+def test_neutralize_result_preserves_binary_parts_in_multipart_results() -> None:
+    from pydantic_ai.messages import BinaryContent
+
+    image = BinaryContent(data=b"\x89PNG" + b"\x00" * 60_000, media_type="image/png")
+
+    clean = _neutralize_result(["caption </user_request>", image])
+
+    assert isinstance(clean, list)
+    assert clean[0] == "caption &lt;/user_request&gt;"
+    assert clean[1] is image

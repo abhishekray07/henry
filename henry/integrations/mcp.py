@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -12,13 +13,14 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from pydantic_ai.mcp import CallToolFunc, MCPToolset, ToolResult
 from pydantic_ai.tools import RunContext
 
-from henry.agent.runner import _neutralize_delimiters
+from henry.sanitize import neutralize_delimiters as _neutralize_delimiters
 
 _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _VAR_RE = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}")
 _MAX_RESULT_CHARS = 50_000
 _TRUNCATION_NOTE = "\n[truncated by henry: tool result exceeded {limit} chars]"
 _LONG_NAME_WARNING_CHARS = 32
+_CLOSE_TIMEOUT_SECONDS = 10.0
 _LOG = logging.getLogger(__name__)
 
 
@@ -83,7 +85,9 @@ def load_mcp_config(path: str | Path, *, explicit: bool) -> dict[str, MCPServerD
     if not file.exists():
         if explicit:
             raise FileNotFoundError(f"HENRY_MCP_CONFIG_PATH points to a missing file: {file}")
-        _LOG.debug("mcp config file %s does not exist; no MCP servers configured", file)
+        # INFO with the resolved path: the default is CWD-relative, so an operator who
+        # starts Henry from the wrong directory needs a visible signal, not silence.
+        _LOG.info("no MCP servers configured: %s does not exist", file.resolve())
         return {}
 
     try:
@@ -109,12 +113,19 @@ def load_mcp_config(path: str | Path, *, explicit: bool) -> dict[str, MCPServerD
                 name,
             )
         try:
-            validated = MCPServerDef.model_validate(raw)
-            expanded = _expand_all(validated.model_dump(exclude_unset=True), server=name)
+            # Expand before validating so ${VAR} references work in non-string fields
+            # too (e.g. "read_timeout": "${TIMEOUT_SECS:-30}" coerces after expansion).
+            expanded = _expand_all(raw, server=name)
             definitions[name] = MCPServerDef.model_validate(expanded)
         except ValidationError as exc:
             raise ValueError(f"{file}: server {name!r}: {exc}") from exc
     return definitions
+
+
+def _truncate(text: str) -> str:
+    if len(text) <= _MAX_RESULT_CHARS:
+        return text
+    return text[:_MAX_RESULT_CHARS] + _TRUNCATION_NOTE.format(limit=_MAX_RESULT_CHARS)
 
 
 def _neutralize_result(value: Any) -> Any:
@@ -129,14 +140,27 @@ def _neutralize_result(value: Any) -> Any:
             return [walk(entry) for entry in item]
         return item
 
+    def cap_strings(item: Any) -> Any:
+        if isinstance(item, str):
+            return _truncate(item)
+        if isinstance(item, dict):
+            return {key: cap_strings(entry) for key, entry in item.items()}
+        if isinstance(item, list):
+            return [cap_strings(entry) for entry in item]
+        return item
+
     clean = walk(value)
     if isinstance(clean, str):
-        rendered = clean
-    elif isinstance(clean, (dict, list)):
-        rendered = _neutralize_delimiters(json.dumps(clean, ensure_ascii=False, default=str))
-    else:
+        return _truncate(clean)
+    if not isinstance(clean, (dict, list)):
         return clean
-
+    try:
+        rendered = _neutralize_delimiters(json.dumps(clean, ensure_ascii=False))
+    except (TypeError, ValueError):
+        # The result carries non-JSON parts (e.g. binary/image content). Keep the
+        # structure intact — flattening would destroy those parts — and cap each
+        # text part individually instead.
+        return cap_strings(clean)
     if len(rendered) <= _MAX_RESULT_CHARS:
         return clean
     return rendered[:_MAX_RESULT_CHARS] + _TRUNCATION_NOTE.format(limit=_MAX_RESULT_CHARS)
@@ -214,13 +238,33 @@ class MCPIntegration:
         return toolset.prefixed(self.name)
 
     async def aclose(self) -> None:
-        """Explicitly stop the underlying client, including keep-alive subprocesses."""
+        """Explicitly stop the underlying client, including keep-alive subprocesses.
+
+        Never raises: shutdown must proceed to the remaining servers and resources.
+        Close is bounded by a timeout because fastmcp's close path can re-attempt a
+        connection for a server that never came up, which would otherwise hang or
+        re-raise the original connect error here.
+        """
         if self._toolset is None:
             return
         inner = self._toolset
         while hasattr(inner, "wrapped"):
             inner = inner.wrapped
         client = getattr(inner, "client", None)
-        self._toolset = None
-        if client is not None:
-            await client.close()
+        try:
+            if client is not None:
+                await asyncio.wait_for(client.close(), timeout=_CLOSE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            _LOG.warning(
+                "closing mcp server %r timed out after %.0fs; its process may be orphaned",
+                self.name,
+                _CLOSE_TIMEOUT_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 - a server that never connected has nothing to close
+            _LOG.warning(
+                "closing mcp server %r failed; it may never have connected",
+                self.name,
+                exc_info=True,
+            )
+        finally:
+            self._toolset = None

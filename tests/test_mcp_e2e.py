@@ -10,12 +10,11 @@ from pathlib import Path
 import httpx
 
 from henry.agent.runner import PydanticAgentRunner
-from henry.contracts import AgentDeps, SlackEvent
+from henry.contracts import SlackEvent
 from henry.db.models import Base, ChannelConfig
 from henry.integrations.mcp import MCPIntegration, MCPServerDef
 from henry.settings import Settings
-from henry.testing import FakeMemory, FakeSandbox
-from henry.types import ChannelContext
+from henry.testing import FakeSandbox
 from henry.wiring import build_runtime
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -32,41 +31,29 @@ def _stdio_def(script: str, env: dict[str, str] | None = None, **overrides) -> M
     )
 
 
-async def _deps() -> AgentDeps:
-    return AgentDeps(
-        ctx=ChannelContext(channel_id="C1", thread_ts="T1", run_id="R1"),
-        memory=FakeMemory(),
-        sandbox=FakeSandbox(),
-        http=httpx.AsyncClient(),
-        settings=Settings(default_model="test"),
-    )
+def _broken_def() -> MCPServerDef:
+    return MCPServerDef.model_validate({"command": "/nonexistent/broken-mcp-binary"})
 
 
-async def _run(integration: MCPIntegration, prompt: str, monkeypatch):
-    monkeypatch.setattr("henry.agent.runner.memory_tools", lambda: [])
-    monkeypatch.setattr("henry.agent.runner.sandbox_tools", lambda: [])
-    deps = await _deps()
-    try:
-        runner = PydanticAgentRunner([integration], model="test")
-        return await runner.run(deps, prompt)
-    finally:
-        await deps.http.aclose()
+async def _run(integration: MCPIntegration, prompt: str, deps):
+    runner = PydanticAgentRunner([integration], model="test")
+    return await runner.run(deps, prompt)
 
 
-async def test_mcp_tool_flows_through_runner(monkeypatch) -> None:
+async def test_mcp_tool_flows_through_runner(stub_agent_tools, agent_deps) -> None:
     integration = MCPIntegration("echoer", _stdio_def("echo_mcp_server.py"))
     try:
-        result = await _run(integration, "use the echo tool", monkeypatch)
+        result = await _run(integration, "use the echo tool", agent_deps)
         assert result.status == "ok"
         assert "ECHO:" in result.output
     finally:
         await integration.aclose()
 
 
-async def test_allowlist_excludes_tools_end_to_end(monkeypatch) -> None:
+async def test_allowlist_excludes_tools_end_to_end(stub_agent_tools, agent_deps) -> None:
     integration = MCPIntegration("echoer", _stdio_def("echo_mcp_server.py", tools=["echo_upper"]))
     try:
-        result = await _run(integration, "use every tool you have", monkeypatch)
+        result = await _run(integration, "use every tool you have", agent_deps)
         assert result.status == "ok"
         assert "ECHO:" in result.output
         assert "HIDDEN-TOOL-RAN" not in result.output
@@ -74,22 +61,54 @@ async def test_allowlist_excludes_tools_end_to_end(monkeypatch) -> None:
         await integration.aclose()
 
 
-async def test_server_death_heals_on_next_run(monkeypatch, tmp_path) -> None:
+async def test_server_death_heals_on_next_run(stub_agent_tools, agent_deps, tmp_path) -> None:
     marker = tmp_path / "flaky-marker"
     integration = MCPIntegration(
         "flaky",
         _stdio_def("flaky_mcp_server.py", env={"HENRY_TEST_FLAKY_MARKER": str(marker)}),
     )
     try:
-        first = await _run(integration, "call the flaky tool", monkeypatch)
+        first = await _run(integration, "call the flaky tool", agent_deps)
         assert first.status == "error"
         assert marker.exists()
 
-        second = await _run(integration, "call the flaky tool", monkeypatch)
+        second = await _run(integration, "call the flaky tool", agent_deps)
         assert second.status == "ok"
         assert "recovered:" in second.output
     finally:
         await integration.aclose()
+
+
+async def test_one_unreachable_server_costs_only_its_own_tools(stub_agent_tools, agent_deps) -> None:
+    """A dead MCP server must not take down runs that never needed it."""
+    broken = MCPIntegration("broken", _broken_def())
+    healthy = MCPIntegration("echoer", _stdio_def("echo_mcp_server.py"))
+    try:
+        runner = PydanticAgentRunner([broken, healthy], model="test")
+
+        result = await runner.run(agent_deps, "use the echo tool")
+
+        assert result.status == "ok"
+        assert "ECHO:" in result.output
+    finally:
+        await healthy.aclose()
+        await broken.aclose()
+
+
+async def test_aclose_never_raises_for_a_server_that_never_connected() -> None:
+    integration = MCPIntegration("broken", _broken_def())
+    toolset = integration.toolset()
+    try:
+        async with toolset:
+            raise AssertionError("connecting to a nonexistent binary should fail")
+    except AssertionError:
+        raise
+    except Exception:
+        pass
+
+    await integration.aclose()  # must not raise, even though the server never came up
+
+    assert integration._toolset is None
 
 
 async def _assert_pid_gone(pid: int) -> None:
@@ -103,7 +122,7 @@ async def _assert_pid_gone(pid: int) -> None:
     raise AssertionError(f"mcp server pid {pid} still alive 10s after close")
 
 
-async def test_aclose_terminates_the_subprocess(monkeypatch, tmp_path) -> None:
+async def test_aclose_terminates_the_subprocess(stub_agent_tools, agent_deps, tmp_path) -> None:
     pid_file = tmp_path / "server.pid"
     integration = MCPIntegration(
         "echoer",
@@ -111,7 +130,7 @@ async def test_aclose_terminates_the_subprocess(monkeypatch, tmp_path) -> None:
     )
     pid: int | None = None
     try:
-        result = await _run(integration, "use the echo tool", monkeypatch)
+        result = await _run(integration, "use the echo tool", agent_deps)
         assert result.status == "ok"
         pid = int(pid_file.read_text())
     finally:
@@ -120,9 +139,9 @@ async def test_aclose_terminates_the_subprocess(monkeypatch, tmp_path) -> None:
             await _assert_pid_gone(pid)
 
 
-async def test_full_path_mcp_json_to_slack_reply_to_shutdown(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr("henry.agent.runner.memory_tools", lambda: [])
-    monkeypatch.setattr("henry.agent.runner.sandbox_tools", lambda: [])
+async def test_full_path_mcp_json_to_slack_reply_to_shutdown(
+    stub_agent_tools, monkeypatch, tmp_path
+) -> None:
     monkeypatch.setenv("HENRY_E2E_PID_FILE", str(tmp_path / "server.pid"))
 
     config = tmp_path / "mcp.json"

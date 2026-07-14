@@ -142,3 +142,33 @@ def test_validation_errors_never_disclose_expanded_secrets(tmp_path, monkeypatch
         load_mcp_config(path, explicit=True)
 
     assert "sk-SENTINEL-do-not-leak" not in str(excinfo.value)
+
+
+def test_env_expansion_works_in_non_string_fields(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("TIMEOUT_SECS", "45")
+    monkeypatch.delenv("UNSET_TIMEOUT", raising=False)
+    path = _write(
+        tmp_path,
+        {
+            "mcpServers": {
+                "s1": {"url": "https://x", "read_timeout": "${TIMEOUT_SECS:-30}"},
+                "s2": {"url": "https://y", "init_timeout": "${UNSET_TIMEOUT:-2.5}"},
+            }
+        },
+    )
+
+    definitions = load_mcp_config(path, explicit=True)
+
+    assert definitions["s1"].read_timeout == 45.0
+    assert definitions["s2"].init_timeout == 2.5
+
+
+def test_missing_default_config_logs_a_visible_note(tmp_path, caplog) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="henry.integrations.mcp"):
+        definitions = load_mcp_config(tmp_path / "mcp.json", explicit=False)
+
+    assert definitions == {}
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("no MCP servers configured" in message and "mcp.json" in message for message in messages)
