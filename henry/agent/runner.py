@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import re
+import logging
 from collections.abc import Sequence
+from contextlib import AsyncExitStack
 from decimal import Decimal
 from typing import Any
 
@@ -16,23 +17,15 @@ from henry.agent.model import build_model
 from henry.agent.prompt import build_instructions
 from henry.contracts import AgentDeps, RunResult, RunUsage
 from henry.interfaces import Integration, ToolsetProvider
+from henry.sanitize import neutralize_delimiters as _neutralize_delimiters
 from henry.types import ConversationTranscript
 
+_LOG = logging.getLogger(__name__)
 
 DEFAULT_INSTRUCTIONS = (
     "You are Henry, a helpful AI teammate in Slack. Answer clearly, use tools when they are useful, "
     "and keep channel-specific memory separate from model-visible user input."
 )
-
-# Structural tags we use to frame user-visible content. User-controlled text must not be
-# able to forge or close these, or it could break out and inject instructions.
-_RESERVED_TAGS = ("slack_thread", "user_request", "channel_memory", "integrations")
-_RESERVED_TAG_RE = re.compile(r"</?(?:" + "|".join(_RESERVED_TAGS) + r")>", re.IGNORECASE)
-
-
-def _neutralize_delimiters(text: str) -> str:
-    """Escape any reserved framing tags appearing in untrusted text so the model reads them literally."""
-    return _RESERVED_TAG_RE.sub(lambda m: m.group(0).replace("<", "&lt;").replace(">", "&gt;"), text)
 
 
 class PydanticAgentRunner:
@@ -60,29 +53,49 @@ class PydanticAgentRunner:
             snapshot = await deps.memory.snapshot(deps.ctx.channel_id)
             integrations = self._active_integrations(deps)
             providers = [i for i in integrations if isinstance(i, ToolsetProvider)]
-            toolset_names = tuple(p.name for p in providers)
-            toolsets = [p.toolset() for p in providers]
-            instructions = build_instructions(
-                getattr(deps.settings, "system_prompt", self._base_instructions) or self._base_instructions,
-                snapshot,
-                [integration.prompt_fragment() for integration in integrations],
-            )
-            agent = Agent(
-                self._build_model(deps),
-                deps_type=AgentDeps,
-                instructions=instructions,
-                tools=[
-                    *[tool for integration in integrations for tool in integration.tools()],
-                    *memory_tools(),
-                    *sandbox_tools(),
-                ],
-                toolsets=toolsets or None,
-            )
-            result = await agent.run(
-                self._render_prompt(user_prompt, transcript),
-                deps=deps,
-                usage_limits=self._usage_limits,
-            )
+            async with AsyncExitStack() as stack:
+                toolsets: list[Any] = []
+                unavailable: set[str] = set()
+                # Connect each external toolset individually so one unreachable server
+                # costs only its own tools instead of failing the whole run.
+                for provider in providers:
+                    try:
+                        toolsets.append(await stack.enter_async_context(provider.toolset()))
+                    except Exception:
+                        _LOG.warning(
+                            "toolset %r is unavailable; running without its tools",
+                            provider.name,
+                            exc_info=True,
+                        )
+                        unavailable.add(provider.name)
+                toolset_names = tuple(p.name for p in providers if p.name not in unavailable)
+                instructions = build_instructions(
+                    getattr(deps.settings, "system_prompt", self._base_instructions)
+                    or self._base_instructions,
+                    snapshot,
+                    [
+                        integration.prompt_fragment()
+                        if integration.name not in unavailable
+                        else f"The {integration.name} integration is temporarily unavailable."
+                        for integration in integrations
+                    ],
+                )
+                agent = Agent(
+                    self._build_model(deps),
+                    deps_type=AgentDeps,
+                    instructions=instructions,
+                    tools=[
+                        *[tool for integration in integrations for tool in integration.tools()],
+                        *memory_tools(),
+                        *sandbox_tools(),
+                    ],
+                    toolsets=toolsets or None,
+                )
+                result = await agent.run(
+                    self._render_prompt(user_prompt, transcript),
+                    deps=deps,
+                    usage_limits=self._usage_limits,
+                )
             return RunResult(
                 output=str(result.output),
                 usage=_map_usage(result.usage, _compute_cost_usd(result.all_messages())),
