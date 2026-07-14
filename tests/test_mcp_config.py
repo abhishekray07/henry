@@ -60,6 +60,22 @@ def test_server_must_be_stdio_xor_url(tmp_path) -> None:
         load_mcp_config(neither, explicit=True)
 
 
+@pytest.mark.parametrize(
+    ("server", "message"),
+    [
+        ({"url": "https://x", "args": ["--oops"]}, "stdio-only.*args"),
+        ({"url": "https://x", "env": {"KEY": "value"}}, "stdio-only.*env"),
+        ({"url": "https://x", "cwd": "/tmp"}, "stdio-only.*cwd"),
+        ({"command": "npx", "headers": {"X-Key": "value"}}, "HTTP-only.*headers"),
+    ],
+)
+def test_transport_specific_fields_cannot_cross_transport_groups(tmp_path, server, message) -> None:
+    path = _write(tmp_path, {"mcpServers": {"s1": server}})
+
+    with pytest.raises(ValueError, match=message):
+        load_mcp_config(path, explicit=True)
+
+
 def test_invalid_server_name_rejected(tmp_path) -> None:
     path = _write(tmp_path, {"mcpServers": {"my server!": {"url": "https://x"}}})
     with pytest.raises(ValueError, match="my server!"):

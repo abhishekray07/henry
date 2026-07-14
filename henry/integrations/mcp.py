@@ -38,6 +38,14 @@ class MCPServerDef(BaseModel):
     def _exactly_one_transport(self) -> MCPServerDef:
         if bool(self.command) == bool(self.url):
             raise ValueError("server needs exactly one of 'command' (stdio) or 'url' (HTTP)")
+        if self.url:
+            unexpected = sorted(self.model_fields_set & {"args", "env", "cwd"})
+            if unexpected:
+                raise ValueError(f"HTTP server includes stdio-only field(s): {', '.join(unexpected)}")
+        else:
+            unexpected = sorted(self.model_fields_set & {"headers"})
+            if unexpected:
+                raise ValueError(f"stdio server includes HTTP-only field(s): {', '.join(unexpected)}")
         return self
 
 
@@ -93,7 +101,7 @@ def load_mcp_config(path: str | Path, *, explicit: bool) -> dict[str, MCPServerD
             raise ValueError(f"{file}: server {name!r} must be an object")
         try:
             validated = MCPServerDef.model_validate(raw)
-            expanded = _expand_all(validated.model_dump(), server=name)
+            expanded = _expand_all(validated.model_dump(exclude_unset=True), server=name)
             definitions[name] = MCPServerDef.model_validate(expanded)
         except ValidationError as exc:
             raise ValueError(f"{file}: server {name!r}: {exc}") from exc

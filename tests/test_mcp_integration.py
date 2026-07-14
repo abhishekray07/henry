@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.toolsets import FilteredToolset, PrefixedToolset
 
@@ -47,6 +49,19 @@ def test_tools_allowlist_inserts_filter_layer() -> None:
     toolset = integration.toolset()
     assert isinstance(toolset, PrefixedToolset)
     assert isinstance(toolset.wrapped, FilteredToolset)
+
+
+def test_tool_error_behavior_and_timeouts_reach_the_client() -> None:
+    integration = MCPIntegration(
+        "helpscout",
+        _url_def(on_tool_error="retry", init_timeout=9, read_timeout=17),
+    )
+
+    inner = integration.toolset().wrapped
+
+    assert inner.tool_error_behavior == "retry"
+    assert inner.client._init_timeout == 9
+    assert inner.client._session_kwargs["read_timeout_seconds"] == timedelta(seconds=17)
 
 
 def test_neutralize_result_walks_nested_structures() -> None:
