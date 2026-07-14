@@ -268,3 +268,13 @@ def test_builtin_discover_finds_github_and_web() -> None:
 
     assert isinstance(registry["github"], GithubIntegration)
     assert isinstance(registry["web"], WebIntegration)
+
+
+def test_github_is_configured_requires_token() -> None:
+    from henry.integrations.builtins.github import get_integration
+    from henry.settings import Settings
+
+    integration = get_integration()
+
+    assert integration.is_configured(Settings(github_token="ghp_x")) is True
+    assert integration.is_configured(Settings()) is False

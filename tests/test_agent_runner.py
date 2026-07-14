@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pydantic_ai import RunContext, UsageLimits
+from pydantic_ai.messages import ModelResponse, RetryPromptPart, TextPart, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.toolsets import FunctionToolset
 
 from henry.agent.runner import PydanticAgentRunner
@@ -52,15 +54,15 @@ async def test_runner_maps_usage_limit_to_budget_status(agent_deps) -> None:
     assert "request_limit" in result.error
 
 
-async def test_runner_maps_tool_exception_to_error_status(stub_agent_tools, agent_deps) -> None:
+async def test_unresolved_tool_failures_still_end_as_error(stub_agent_tools, agent_deps) -> None:
+    """Tool errors feed back to the model, but exhausting the retry budget is still an error."""
     runner = PydanticAgentRunner([ExplodingIntegration()], model="test")
 
     result = await runner.run(agent_deps, "trigger tool")
 
     assert result.status == "error"
     assert result.error is not None
-    assert "ValueError" in result.error
-    assert "boom" in result.error
+    assert "exceeded max retries" in result.error
 
 
 class ExplodingIntegration:
@@ -167,3 +169,69 @@ async def test_run_without_tools_survives_a_dead_toolset(stub_agent_tools, agent
     result = await runner.run(agent_deps, "just say hi, no tools needed")
 
     assert result.status == "ok"
+
+
+class UnauthorizedApiIntegration:
+    """Integration whose tool fails like an external API without credentials."""
+
+    name = "githubish"
+    auth_type = "none"
+    allowed_domains: tuple[str, ...] = ()
+
+    def tools(self) -> list[ToolSpec]:
+        async def search(ctx: RunContext[AgentDeps], query: str) -> str:
+            raise RuntimeError("Client error '401 Unauthorized' for url 'https://api.example.com'")
+
+        return [search]
+
+    def prompt_fragment(self) -> str:
+        return "Githubish search is available."
+
+
+async def test_integration_tool_failure_feeds_back_to_model(stub_agent_tools, agent_deps) -> None:
+    """An external API error must reach the model as a retry, not kill the run."""
+    seen_retries: list[str] = []
+
+    def driver(messages, info) -> ModelResponse:
+        retry = next((p for p in messages[-1].parts if isinstance(p, RetryPromptPart)), None)
+        if retry is not None:
+            seen_retries.append(str(retry.content))
+            return ModelResponse(parts=[TextPart(content="search is unavailable; proceeding without it")])
+        return ModelResponse(parts=[ToolCallPart(tool_name="search", args={"query": "the error"})])
+
+    runner = PydanticAgentRunner([UnauthorizedApiIntegration()], model=FunctionModel(driver))
+
+    result = await runner.run(agent_deps, "find the error")
+
+    assert result.status == "ok"
+    assert "proceeding without it" in result.output
+    assert len(seen_retries) == 1
+    assert "401" in seen_retries[0]
+    assert "githubish" in seen_retries[0]
+
+
+class UnconfiguredIntegration(ToolsetIntegration):
+    name = "unconfigured"
+
+    def is_configured(self, settings) -> bool:
+        return False
+
+
+async def test_wildcard_skips_unconfigured_integrations(stub_agent_tools, agent_deps) -> None:
+    deps = _scoped(agent_deps, "*")
+    runner = PydanticAgentRunner([UnconfiguredIntegration()], model="test")
+
+    result = await runner.run(deps, "shout something")
+
+    assert result.status == "ok"
+    assert "SHOUTED:" not in result.output
+
+
+async def test_explicit_enablement_overrides_is_configured(stub_agent_tools, agent_deps) -> None:
+    deps = _scoped(agent_deps, ["unconfigured"])
+    runner = PydanticAgentRunner([UnconfiguredIntegration()], model="test")
+
+    result = await runner.run(deps, "shout something")
+
+    assert result.status == "ok"
+    assert "SHOUTED:" in result.output

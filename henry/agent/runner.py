@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Sequence
 from contextlib import AsyncExitStack
@@ -7,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from pydantic_ai import Agent, UsageLimits
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import ModelRetry, UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage as PydanticRunUsage
@@ -26,6 +27,36 @@ DEFAULT_INSTRUCTIONS = (
     "You are Henry, a helpful AI teammate in Slack. Answer clearly, use tools when they are useful, "
     "and keep channel-specific memory separate from model-visible user input."
 )
+
+
+def _feed_errors_back(tool: Any, integration_name: str) -> Any:
+    """Turn integration tool failures into retries the model can react to.
+
+    External-facing tools fail for reasons the model can work around (missing
+    credentials, 4xx/5xx, network); a raw exception would kill the whole run.
+    Unresolved retries still exhaust the retry budget and end as an error.
+    """
+
+    @functools.wraps(tool)
+    async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await tool(*args, **kwargs)
+        except ModelRetry:
+            raise
+        except Exception as exc:
+            raise ModelRetry(
+                f"The {integration_name} tool call failed: {exc}. "
+                "You may adjust the arguments and retry, or proceed without this tool."
+            ) from exc
+
+    return wrapper
+
+
+def _is_configured(integration: Integration, settings: Any) -> bool:
+    checker = getattr(integration, "is_configured", None)
+    if checker is None:
+        return True
+    return bool(checker(settings))
 
 
 class PydanticAgentRunner:
@@ -85,7 +116,11 @@ class PydanticAgentRunner:
                     deps_type=AgentDeps,
                     instructions=instructions,
                     tools=[
-                        *[tool for integration in integrations for tool in integration.tools()],
+                        *[
+                            _feed_errors_back(tool, integration.name)
+                            for integration in integrations
+                            for tool in integration.tools()
+                        ],
                         *memory_tools(),
                         *sandbox_tools(),
                     ],
@@ -120,7 +155,14 @@ class PydanticAgentRunner:
     def _active_integrations(self, deps: AgentDeps) -> tuple[Integration, ...]:
         enabled = getattr(deps.settings, "enabled_integrations", None)
         if enabled is None or enabled == "*":
-            return self._integrations
+            # Wildcard means "everything usable", not "everything that exists": an
+            # integration without its credentials would only hand the model tools
+            # that fail. Explicitly named integrations below are always honored.
+            return tuple(
+                integration
+                for integration in self._integrations
+                if _is_configured(integration, deps.settings)
+            )
 
         by_name = {integration.name: integration for integration in self._integrations}
         unknown = set(enabled) - set(by_name)

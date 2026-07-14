@@ -233,6 +233,11 @@ class GithubIntegration:
             "are unavailable unless the current Slack channel has explicit GitHub write capability."
         )
 
+    def is_configured(self, settings: Any) -> bool:
+        # Without a token, code search and most reads 401/rate-limit immediately;
+        # wildcard channels should not receive tools that can only fail.
+        return bool(getattr(settings, "github_token", ""))
+
 
 def get_integration() -> GithubIntegration:
     return GithubIntegration()
