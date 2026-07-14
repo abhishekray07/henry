@@ -93,6 +93,11 @@ add servers (same format as Claude Desktop), put secrets in `.env` and reference
 default; add a `channel_config` row with an explicit `enabled_integrations` list to scope
 a channel down.
 
+Treat `mcp.json` as trusted, operator-level deployment configuration: stdio definitions
+can execute arbitrary commands and both transports can receive secrets. Henry's current
+single-tenant model intentionally does not expose server management through chat. A
+hosted, multi-tenant version will move definitions behind an admin control plane.
+
 Rules of thumb:
 
 - Server names become tool prefixes; use `[a-zA-Z0-9_-]`, max 64 chars.

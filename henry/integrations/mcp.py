@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -17,6 +18,8 @@ _NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _VAR_RE = re.compile(r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::-(?P<default>[^}]*))?\}")
 _MAX_RESULT_CHARS = 50_000
 _TRUNCATION_NOTE = "\n[truncated by henry: tool result exceeded {limit} chars]"
+_LONG_NAME_WARNING_CHARS = 32
+_LOG = logging.getLogger(__name__)
 
 
 class MCPServerDef(BaseModel):
@@ -80,6 +83,7 @@ def load_mcp_config(path: str | Path, *, explicit: bool) -> dict[str, MCPServerD
     if not file.exists():
         if explicit:
             raise FileNotFoundError(f"HENRY_MCP_CONFIG_PATH points to a missing file: {file}")
+        _LOG.debug("mcp config file %s does not exist; no MCP servers configured", file)
         return {}
 
     try:
@@ -99,6 +103,11 @@ def load_mcp_config(path: str | Path, *, explicit: bool) -> dict[str, MCPServerD
             )
         if not isinstance(raw, dict):
             raise ValueError(f"{file}: server {name!r} must be an object")
+        if len(name) > _LONG_NAME_WARNING_CHARS:
+            _LOG.warning(
+                "mcp server name %r is long; its tool prefix may exceed provider tool-name limits",
+                name,
+            )
         try:
             validated = MCPServerDef.model_validate(raw)
             expanded = _expand_all(validated.model_dump(exclude_unset=True), server=name)
@@ -109,33 +118,28 @@ def load_mcp_config(path: str | Path, *, explicit: bool) -> dict[str, MCPServerD
 
 
 def _neutralize_result(value: Any) -> Any:
-    """Escape reserved framing tags under one cumulative result-size budget."""
-    remaining = _MAX_RESULT_CHARS
-    truncation_noted = False
+    """Escape reserved tags and cap the prompt-facing size of the whole result."""
 
     def walk(item: Any) -> Any:
-        nonlocal remaining, truncation_noted
         if isinstance(item, str):
-            if remaining <= 0:
-                if item and not truncation_noted:
-                    truncation_noted = True
-                    return _TRUNCATION_NOTE.format(limit=_MAX_RESULT_CHARS)
-                return ""
-            neutralized = _neutralize_delimiters(item)
-            if len(neutralized) > remaining:
-                clipped = neutralized[:remaining] + _TRUNCATION_NOTE.format(limit=_MAX_RESULT_CHARS)
-                remaining = 0
-                truncation_noted = True
-                return clipped
-            remaining -= len(neutralized)
-            return neutralized
+            return _neutralize_delimiters(item)
         if isinstance(item, dict):
-            return {key: walk(entry) for key, entry in item.items()}
+            return {walk(key): walk(entry) for key, entry in item.items()}
         if isinstance(item, list):
             return [walk(entry) for entry in item]
         return item
 
-    return walk(value)
+    clean = walk(value)
+    if isinstance(clean, str):
+        rendered = clean
+    elif isinstance(clean, (dict, list)):
+        rendered = _neutralize_delimiters(json.dumps(clean, ensure_ascii=False, default=str))
+    else:
+        return clean
+
+    if len(rendered) <= _MAX_RESULT_CHARS:
+        return clean
+    return rendered[:_MAX_RESULT_CHARS] + _TRUNCATION_NOTE.format(limit=_MAX_RESULT_CHARS)
 
 
 async def _sanitizing_tool_call(

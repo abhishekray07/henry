@@ -82,11 +82,30 @@ def test_invalid_server_name_rejected(tmp_path) -> None:
         load_mcp_config(path, explicit=True)
 
 
+def test_long_server_name_warns_about_provider_tool_limits(tmp_path, caplog) -> None:
+    name = "a" * 33
+    path = _write(tmp_path, {"mcpServers": {name: {"url": "https://x"}}})
+
+    with caplog.at_level("WARNING", logger="henry.integrations.mcp"):
+        load_mcp_config(path, explicit=True)
+
+    assert any(name in record.getMessage() for record in caplog.records)
+
+
 def test_missing_file_explicit_raises_default_returns_empty(tmp_path) -> None:
     missing = str(tmp_path / "nope.json")
     with pytest.raises(FileNotFoundError):
         load_mcp_config(missing, explicit=True)
     assert load_mcp_config(missing, explicit=False) == {}
+
+
+def test_missing_default_file_emits_debug_signal(tmp_path, caplog) -> None:
+    missing = tmp_path / "nope.json"
+
+    with caplog.at_level("DEBUG", logger="henry.integrations.mcp"):
+        assert load_mcp_config(missing, explicit=False) == {}
+
+    assert any(str(missing) in record.getMessage() for record in caplog.records)
 
 
 def test_malformed_json_raises(tmp_path) -> None:
