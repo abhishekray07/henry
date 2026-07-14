@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Henry × MCP — the plan, explained</title>
+<style>
+  :root {
+    --paper: #f7f6fb;
+    --ink: #26233a;
+    --muted: #6d6a82;
+    --accent: #5b50c8;
+    --accent-ink: #453cab;
+    --card: #ffffff;
+    --line: #dedbeb;
+    --code-bg: #211e33;
+    --code-ink: #d6d2ee;
+    --code-comment: #8d87b8;
+    --kept: #2e7d5b;
+    --kept-bg: #e9f4ee;
+    --rejected: #b0475a;
+    --rejected-bg: #f9ecee;
+    --warn: #9a6a1f;
+    --warn-bg: #f8f1e2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #1a1733;
+      --ink: #e6e3f4;
+      --muted: #9c98b8;
+      --accent: #9d94e8;
+      --accent-ink: #b3abf0;
+      --card: #232041;
+      --line: #37335c;
+      --code-bg: #131022;
+      --code-ink: #cfcaec;
+      --code-comment: #7d77a8;
+      --kept: #6fc39d;
+      --kept-bg: #1e3a2e;
+      --rejected: #e08a99;
+      --rejected-bg: #46232b;
+      --warn: #d9a856;
+      --warn-bg: #3c3120;
+    }
+  }
+  :root[data-theme="light"] {
+    --paper: #f7f6fb; --ink: #26233a; --muted: #6d6a82; --accent: #5b50c8;
+    --accent-ink: #453cab; --card: #ffffff; --line: #dedbeb;
+    --code-bg: #211e33; --code-ink: #d6d2ee; --code-comment: #8d87b8;
+    --kept: #2e7d5b; --kept-bg: #e9f4ee; --rejected: #b0475a; --rejected-bg: #f9ecee;
+    --warn: #9a6a1f; --warn-bg: #f8f1e2;
+  }
+  :root[data-theme="dark"] {
+    --paper: #1a1733; --ink: #e6e3f4; --muted: #9c98b8; --accent: #9d94e8;
+    --accent-ink: #b3abf0; --card: #232041; --line: #37335c;
+    --code-bg: #131022; --code-ink: #cfcaec; --code-comment: #7d77a8;
+    --kept: #6fc39d; --kept-bg: #1e3a2e; --rejected: #e08a99; --rejected-bg: #46232b;
+    --warn: #d9a856; --warn-bg: #3c3120;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: Charter, "Iowan Old Style", Georgia, serif;
+    font-size: 17px;
+    line-height: 1.6;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 3rem 1.25rem 6rem; }
+
+  h1, h2, h3, .eyebrow, .chip, .step-n, .flow, .verdict {
+    font-family: "Avenir Next", Avenir, "Helvetica Neue", system-ui, sans-serif;
+  }
+  h1 { font-size: 2rem; font-weight: 700; line-height: 1.15; margin: .5rem 0 0; text-wrap: balance; }
+  h2 { font-size: 1.3rem; font-weight: 600; margin: 0 0 .75rem; text-wrap: balance; }
+  h3 { font-size: 1.02rem; font-weight: 600; margin: 1.4rem 0 .4rem; }
+  p { margin: .7rem 0; }
+  section { margin-top: 3.2rem; }
+  a { color: var(--accent-ink); }
+
+  .eyebrow {
+    font-size: .72rem; font-weight: 600; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent-ink); margin: 0 0 .35rem;
+  }
+  .lede { font-size: 1.12rem; color: var(--muted); margin-top: .8rem; }
+  .chips { display: flex; gap: .5rem; flex-wrap: wrap; margin-top: 1.1rem; }
+  .chip {
+    font-size: .74rem; font-weight: 600; letter-spacing: .03em;
+    padding: .22rem .6rem; border-radius: 99px; border: 1px solid var(--line);
+    color: var(--muted); background: var(--card);
+  }
+  .chip.ok { color: var(--kept); border-color: transparent; background: var(--kept-bg); }
+
+  code, pre {
+    font-family: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: .84em;
+  }
+  p code, li code, td code {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 4px; padding: .06em .34em;
+  }
+  pre {
+    background: var(--code-bg); color: var(--code-ink);
+    border-radius: 10px; padding: 1rem 1.2rem; line-height: 1.55;
+    overflow-x: auto; margin: 1rem 0;
+  }
+  pre .c { color: var(--code-comment); }
+  pre .k { color: #a5d8c3; }
+
+  .flowwrap { overflow-x: auto; padding: .25rem 0 .75rem; }
+  .flow { display: flex; align-items: stretch; gap: 0; min-width: 640px; }
+  .node {
+    flex: 1; background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: .65rem .8rem; font-size: .8rem; line-height: 1.4;
+  }
+  .node b { display: block; font-size: .84rem; }
+  .node small { color: var(--muted); }
+  .node.mcp { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+  .arrow {
+    align-self: center; color: var(--muted); padding: 0 .45rem;
+    font-family: "Avenir Next", system-ui, sans-serif; font-size: .9rem; flex: none;
+  }
+
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.2rem; }
+  @media (max-width: 640px) { .pair { grid-template-columns: 1fr; } }
+  .decision { border-radius: 12px; padding: 1rem 1.15rem; border: 1px solid var(--line); background: var(--card); }
+  .decision .verdict {
+    display: inline-block; font-size: .7rem; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; padding: .18rem .55rem; border-radius: 99px; margin-bottom: .55rem;
+  }
+  .decision.no .verdict { color: var(--rejected); background: var(--rejected-bg); }
+  .decision.yes .verdict { color: var(--kept); background: var(--kept-bg); }
+  .decision.no { border-color: color-mix(in srgb, var(--rejected) 35%, var(--line)); }
+  .decision.yes { border-color: color-mix(in srgb, var(--kept) 35%, var(--line)); }
+  .decision h3 { margin: 0 0 .4rem; }
+  .decision p { font-size: .92rem; margin: .45rem 0; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; margin: 1rem 0; }
+  .tablewrap { overflow-x: auto; }
+  th { font-family: "Avenir Next", system-ui, sans-serif; font-size: .72rem; font-weight: 600;
+       letter-spacing: .09em; text-transform: uppercase; color: var(--muted); text-align: left; }
+  th, td { padding: .5rem .75rem .5rem 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td:first-child { white-space: nowrap; }
+
+  ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 1.2rem 0 0; }
+  ol.steps li { counter-increment: s; display: flex; gap: .9rem; padding: .55rem 0; border-bottom: 1px solid var(--line); }
+  ol.steps li:last-child { border-bottom: none; }
+  .step-n {
+    flex: none; width: 1.7rem; height: 1.7rem; border-radius: 50%;
+    background: var(--card); border: 1px solid var(--line); color: var(--accent-ink);
+    font-size: .8rem; font-weight: 600; display: flex; align-items: center; justify-content: center;
+    margin-top: .1rem; font-variant-numeric: tabular-nums;
+  }
+  ol.steps li::before { content: none; }
+  ol.steps .step-n::before { content: counter(s); }
+  ol.steps p { margin: 0; font-size: .95rem; }
+  ol.steps small { color: var(--muted); }
+
+  .callout {
+    border-left: 3px solid var(--warn); background: var(--warn-bg);
+    border-radius: 0 10px 10px 0; padding: .8rem 1.1rem; margin: 1.2rem 0; font-size: .95rem;
+  }
+  .callout b { color: var(--warn); }
+
+  ul.layers { padding-left: 1.1rem; }
+  ul.layers li { margin: .55rem 0; }
+  ul.layers li::marker { color: var(--accent); }
+
+  footer { margin-top: 4rem; color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Henry · plan explainer · 2026-07-13</p>
+    <h1>Plug any tool into Henry with MCP</h1>
+    <p class="lede">Instead of hand-coding a new Python integration every time Henry needs to reach a new system (HelpScout, Linear, Sentry…), you list servers in one config file and flip them on per channel.</p>
+    <div class="chips">
+      <span class="chip ok">Codex reviewed · 22 findings folded in</span>
+      <span class="chip">Not yet implemented</span>
+      <span class="chip">Source: docs/plans/2026-07-13-mcp-integrations.md</span>
+    </div>
+  </header>
+
+  <section>
+    <p class="eyebrow">Why now</p>
+    <h2>The HelpScout moment</h2>
+    <p>You asked <em>@Henry help me investigate: &lt;a HelpScout link&gt;</em> and Henry answered, correctly, that he has no way to open it. Today Henry has exactly two tools baked in — GitHub and generic web fetch — and each one is hand-written Python living inside Henry's codebase. Every new system means writing, testing, and maintaining more of that code.</p>
+    <p>MCP (Model Context Protocol) is the industry's standard plug socket for AI tools. Thousands of ready-made MCP "servers" exist — small programs that expose a system's actions (read a ticket, search an issue tracker, query a database) in a format any AI agent can consume. Henry's original design doc already promised this ("External tools = MCP toolsets"); it just never got built. This plan builds it.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">The shape of it</p>
+    <h2>What happens when someone @mentions Henry</h2>
+    <p>Nothing changes until the last step — that's the point. MCP slots into the existing per-channel gating instead of inventing a new mechanism.</p>
+    <div class="flowwrap">
+      <div class="flow" role="img" aria-label="Flow: Slack mention, to channel config filter, to agent run, to tools, where MCP servers join the existing builtins">
+        <div class="node"><b>Slack mention</b><small>@Henry in a channel</small></div>
+        <div class="arrow">→</div>
+        <div class="node"><b>Channel config</b><small>everything on by default; per-channel exceptions</small></div>
+        <div class="arrow">→</div>
+        <div class="node"><b>Agent run</b><small>fresh agent per request, as today</small></div>
+        <div class="arrow">→</div>
+        <div class="node"><b>Builtin tools</b><small>github · web · memory · sandbox</small></div>
+        <div class="arrow">+</div>
+        <div class="node mcp"><b>MCP servers</b><small>new — from mcp.json, e.g. helpscout</small></div>
+      </div>
+    </div>
+    <p>An MCP server runs either as a small subprocess on your machine (<code>command</code>) or as a remote HTTPS endpoint (<code>url</code>). Henry connects, asks it what tools it offers, and hands those tools to the model — namespaced as <code>helpscout_get_conversation</code> etc. so servers can't collide.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Operator experience</p>
+    <h2>One config file: <code>mcp.json</code></h2>
+    <p>Same format Claude Desktop uses, so most servers' READMEs paste straight in. Secrets stay in <code>.env</code> and are referenced with <code>${VAR}</code>.</p>
+<pre>{
+  "mcpServers": {
+    "helpscout": {
+      "url": "https://example.com/mcp",
+      "headers": {"Authorization": "Bearer <span class="k">${HELPSCOUT_API_KEY}</span>"},  <span class="c">← from .env</span>
+      "description": "Read Help Scout conversations",       <span class="c">← goes into Henry's prompt</span>
+      "tools": ["get_conversation", "search_conversations"], <span class="c">← allowlist: only these two</span>
+      "on_tool_error": "error"                               <span class="c">← never auto-retry actions</span>
+    },
+    "filesystem": {
+      "command": "npx",                                      <span class="c">← local subprocess server</span>
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
+    }
+  }
+}</pre>
+    <p><b>And that's the whole setup.</b> The OSS version is single-tenant — you are the operator, the admin, and the user — so adding a server here enables it in every channel automatically (a new <code>"*"</code> default). No admin UI, no per-channel SQL. A channel can still be scoped down with an explicit <code>channel_config</code> row when you want an exception, like keeping a write-capable server confined to an ops channel.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">The decision the review changed</p>
+    <h2>Connection lifecycle: the one hard problem</h2>
+    <p>The first draft connected to every server at startup and held the connections open. Two independent reviews (an internal design pass, then Codex reading the actual library source) proved that design couldn't work. This is the plan's most important revision:</p>
+    <div class="pair">
+      <div class="decision no">
+        <span class="verdict">Rejected — draft 1</span>
+        <h3>Connect at startup, hold forever</h3>
+        <p>Open every configured server when Henry boots; keep connections pinned for the process lifetime.</p>
+        <p><b>Why it dies:</b> the library counts how many things hold a connection, and only reconnects when that count hits zero. Pinning means it never hits zero — so a crashed server stays dead until you restart Henry. The "reconnect guard" patch had no place to run from and broke under concurrent runs.</p>
+        <p><b>Also:</b> it spins up servers no channel ever enabled.</p>
+      </div>
+      <div class="decision yes">
+        <span class="verdict">Adopted — final</span>
+        <h3>Connect per run, keep processes warm</h3>
+        <p>Each agent run opens the connections it needs and releases them when done — the library already does this on its own.</p>
+        <p><b>Why it works:</b> the count returns to zero after every run, so a crashed server heals on the next message automatically. Local subprocess servers stay warm between runs (<code>keep_alive</code>), so there's no restart cost — just a quick handshake.</p>
+        <p><b>Cost:</b> remote servers re-handshake each run. Fine for V1.</p>
+      </div>
+    </div>
+    <p>One consequence needs explicit handling: "keep the process warm" means shutdown must <em>deliberately</em> kill those subprocesses — closing the connection alone doesn't. Henry's shutdown path gets that, and a pre-existing bug gets fixed along the way (a failure during startup could already leak database and HTTP connections; now everything after runtime construction sits inside the cleanup scope).</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Trust model</p>
+    <h2>Security: five layers, honestly labeled</h2>
+    <ul class="layers">
+      <li><b>Definitions are operator-only, by design.</b> A server definition means "run this command on my machine" or "send this key to this URL" — that power stays with whoever controls <code>mcp.json</code> and <code>.env</code>, never a chat command. In single-tenant that's you; servers are then on everywhere by default, with per-channel scoping as the exception.</li>
+      <li><b>Tool allowlist per server — the primary control.</b> Henry can't know which of a third-party server's tools delete things — so <code>"tools": [...]</code> lets you expose only the read-only ones. The docs will say: always allowlist third-party servers.</li>
+      <li><b>No auto-retry of failed actions.</b> Retrying a failed "send reply" can send it twice. Errors surface instead of retrying, unless a server is explicitly marked safe to retry.</li>
+      <li><b>Server instructions ignored.</b> MCP servers can ship their own "system prompt" text — the single biggest injection channel. Henry hardcodes this off.</li>
+      <li><b>Output sanitized — with a scoped claim.</b> Every string a server returns (including nested ones) gets Henry's framing-tag escaping and a ~50KB size cap.</li>
+    </ul>
+    <div class="callout"><b>Honest caveat:</b> sanitization protects Henry's prompt <em>structure</em>, not against a malicious server writing persuasive English ("ignore your instructions and…"). The real defenses are the opt-in and the allowlist. The docs say exactly this rather than implying more.</div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Blast radius</p>
+    <h2>What actually changes in the code</h2>
+    <div class="tablewrap">
+      <table>
+        <tr><th>Where</th><th>Change</th></tr>
+        <tr><td><code>henry/config/registry.py</code> · <code>defaults.json</code></td><td>The <code>"*"</code> enablement sentinel: all registered integrations on by default; explicit channel rows narrow.</td></tr>
+        <tr><td><code>henry/integrations/mcp.py</code></td><td><b>New.</b> Parses <code>mcp.json</code> (env expansion, strict validation, name rules) and wraps each server as an integration Henry's registry understands.</td></tr>
+        <tr><td><code>henry/interfaces.py</code></td><td>New small <code>ToolsetProvider</code> capability protocol — deliberately separate so the existing <code>Integration</code> contract (and every current integration) stays untouched.</td></tr>
+        <tr><td><code>henry/agent/runner.py</code></td><td>Per run: collect toolsets from the channel's enabled integrations and hand them to the agent. Error messages name the server involved.</td></tr>
+        <tr><td><code>henry/wiring.py</code></td><td>Merge MCP servers into the registry (loud failure on a name clash with a builtin); shutdown closes MCP servers first.</td></tr>
+        <tr><td><code>henry/app.py</code></td><td>Widen the cleanup scope (the pre-existing leak fix).</td></tr>
+        <tr><td><code>henry/settings.py</code> · <code>pyproject.toml</code></td><td><code>HENRY_MCP_CONFIG_PATH</code> setting; declare <code>fastmcp-slim</code> as a real dependency.</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <p class="eyebrow">Execution</p>
+    <h2>Ten steps, test-first</h2>
+    <p>Each step is a failing test, then the code that makes it pass. The order is deliberate: contracts first, riskiest proof last.</p>
+    <ol class="steps">
+      <li><span class="step-n"></span><p><b>The <code>"*"</code> enablement default</b> — everything configured is on everywhere; an explicit channel row still narrows. <small>The single-tenant decision, in code.</small></p></li>
+      <li><span class="step-n"></span><p><b>Capability protocol</b> — the <code>ToolsetProvider</code> contract. <small>Foundation both later steps depend on.</small></p></li>
+      <li><span class="step-n"></span><p><b>Runner accepts toolsets</b> — proven with a plain local toolset, no MCP involved yet. <small>Isolates the runner change from MCP entirely.</small></p></li>
+      <li><span class="step-n"></span><p><b>Config parsing</b> — every validation rule, env expansion, missing-file semantics.</p></li>
+      <li><span class="step-n"></span><p><b>The adapter</b> — server definition → integration, allowlists, timeouts, sanitizer, idempotent close.</p></li>
+      <li><span class="step-n"></span><p><b>Settings + dependency</b> declaration.</p></li>
+      <li><span class="step-n"></span><p><b>Wiring</b> — registry merge, shutdown ordering.</p></li>
+      <li><span class="step-n"></span><p><b>App lifecycle scope</b> — the leak fix, with a test that injects a startup failure.</p></li>
+      <li><span class="step-n"></span><p><b>End-to-end against a real MCP server</b> — a tiny checked-in server; tests cover the risky parts: kill the server process → next run heals; shutdown really terminates the subprocess; the allowlist really filters. <small>The proof the whole plan hangs on.</small></p></li>
+      <li><span class="step-n"></span><p><b>Docs</b> — <code>mcp.json.example</code> + README, including the honest security caveat.</p></li>
+    </ol>
+    <p style="margin-top:1rem;">Done means: full test suite green, then a live smoke test — a real server in <code>mcp.json</code>, enabled for one test channel, exercised from Slack with an @mention.</p>
+  </section>
+
+  <section>
+    <p class="eyebrow">Provenance</p>
+    <h2>How this plan was hardened</h2>
+    <p>Draft 1 was designed from two codebase explorations (Henry's internals + the installed pydantic-ai library), then challenged twice: an internal architecture review reshaped the integration contract, and a Codex review — which read the actual library source, ~1.5M tokens of it — found 18 issues including the fatal reconnect flaw, plus 4 gate findings (2&nbsp;critical). All 22 are resolved in the current plan; the two review sections above (<em>lifecycle</em> and <em>security</em>) are where most of that pressure landed. A third revision followed a product decision: the OSS version is single-tenant, so enablement flipped from per-channel opt-in to on-everywhere by default. That revision post-dates the Codex review; engineering review hasn't run yet.</p>
+  </section>
+
+  <footer>
+    Companion to <code>docs/plans/2026-07-13-mcp-integrations.md</code> — the markdown plan is the source of truth; this page explains it.
+  </footer>
+</main>
+</body>
+</html>
