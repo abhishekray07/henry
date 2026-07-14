@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "helpscout": {
+      "url": "https://example.com/mcp",
+      "headers": {"Authorization": "Bearer ${HELPSCOUT_API_KEY}"},
+      "description": "Read Help Scout conversations and customers",
+      "tools": ["get_conversation", "search_conversations"]
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/data"]
+    }
+  }
+}

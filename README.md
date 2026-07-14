@@ -85,5 +85,26 @@ uv run ruff check .
 uv run pytest -q
 ```
 
+## Connecting tools (MCP)
+
+Henry speaks [MCP](https://modelcontextprotocol.io) — copy `mcp.json.example` to `mcp.json`,
+add servers (same format as Claude Desktop), put secrets in `.env` and reference them as
+`${VAR}`, then restart Henry. Every configured server is available in every channel by
+default; add a `channel_config` row with an explicit `enabled_integrations` list to scope
+a channel down.
+
+Rules of thumb:
+
+- Server names become tool prefixes; use `[a-zA-Z0-9_-]`, max 64 chars.
+- **Allowlist third-party servers** with `"tools": [...]` — only the listed tools are
+  exposed. Henry can't know which tools mutate data; you can.
+- Tool errors are not retried by default (retrying a "send reply" can send it twice).
+  Set `"on_tool_error": "retry"` per server only if its tools are idempotent.
+- Henry ignores server-provided instructions and escapes its own framing tags in tool
+  output. That protects Henry's prompt structure — it does **not** make a malicious
+  server safe. Only configure servers you trust, and allowlist their tools.
+- Optional per-server keys: `description` (shown to the model), `init_timeout` (default 5s),
+  `read_timeout` (default 60s).
+
 ## License
 AGPL-3.0-or-later. Contributions require signing the CLA ([`CLA.md`](CLA.md)).
