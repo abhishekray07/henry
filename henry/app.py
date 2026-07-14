@@ -24,18 +24,18 @@ async def amain() -> None:
     settings = get_settings()
     validate_startup_settings(settings)
     runtime = build_runtime(settings)
-    app = create_slack_app(
-        bot_token=settings.slack_bot_token,
-        orchestrator=runtime.handle_event,
-        deduper=runtime.deduper,
-    )
-    auth = await app.client.auth_test()
-    runtime.transcript_fetcher = make_transcript_fetcher(
-        app.client,
-        bot_user_id=str(auth.get("user_id") or "") or None,
-    )
-    handler = AsyncSocketModeHandler(app, settings.slack_app_token)
     try:
+        app = create_slack_app(
+            bot_token=settings.slack_bot_token,
+            orchestrator=runtime.handle_event,
+            deduper=runtime.deduper,
+        )
+        auth = await app.client.auth_test()
+        runtime.transcript_fetcher = make_transcript_fetcher(
+            app.client,
+            bot_user_id=str(auth.get("user_id") or "") or None,
+        )
+        handler = AsyncSocketModeHandler(app, settings.slack_app_token)
         await handler.start_async()
     finally:
         await runtime.close()
