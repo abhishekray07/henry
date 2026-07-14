@@ -101,3 +101,42 @@ async def test_wildcard_is_rejected_in_channel_rows() -> None:
 
     with pytest.raises(ValueError, match="explicit list"):
         await load_channel_config(FakeSession(row), "C123", known_integrations={"github"})
+
+
+async def test_row_without_integrations_override_inherits_the_wildcard_default(tmp_path) -> None:
+    """A persisted row created to set an unrelated field must not silently deny all integrations.
+
+    Uses a real database so the column default (not just the Python constructor)
+    is what load_channel_config sees.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from henry.db.models import Base, ChannelConfig
+    from henry.db.session import make_sessionmaker
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'db.sqlite'}", poolclass=NullPool)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        sessionmaker = make_sessionmaker(engine)
+        async with sessionmaker() as session:
+            session.add(ChannelConfig(channel_id="C123", system_prompt="custom prompt"))
+            await session.commit()
+
+        async with sessionmaker() as session:
+            resolved = await load_channel_config(session, "C123", known_integrations={"github"})
+    finally:
+        await engine.dispose()
+
+    assert resolved.system_prompt == "custom prompt"
+    assert resolved.enabled_integrations == "*"
+
+
+async def test_explicit_empty_list_still_means_deny_all() -> None:
+    row = {"channel_id": "C123", "enabled_integrations": []}
+
+    resolved = await load_channel_config(FakeSession(row), "C123", known_integrations={"github"})
+
+    assert resolved.enabled_integrations == []

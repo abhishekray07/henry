@@ -41,7 +41,10 @@ class ChannelConfig(Base):
     channel_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     system_prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
     model: Mapped[str] = mapped_column(String(256), default="", nullable=False)
-    enabled_integrations: Mapped[list[str]] = mapped_column(JSONB_TYPE, default=list, nullable=False)
+    # NULL means "no override — inherit the default"; an explicit [] means deny-all.
+    # A non-null default here would silently override the "*" default for any row
+    # created to set an unrelated field (e.g. just a system_prompt).
+    enabled_integrations: Mapped[list[str] | None] = mapped_column(JSONB_TYPE, default=None, nullable=True)
     ambient_on: Mapped[bool] = mapped_column(default=False, nullable=False)
     budget_caps: Mapped[dict[str, Any]] = mapped_column(JSONB_TYPE, default=dict, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
