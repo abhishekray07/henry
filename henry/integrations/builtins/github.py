@@ -76,11 +76,29 @@ def _write_enabled(settings: Any, channel_id: str) -> bool:
     return channel_id in set(channels)
 
 
+def _default_repo(settings: Any) -> str:
+    return str(getattr(settings, "github_default_repo", "") or "").strip()
+
+
+def _resolve_repo(ctx: RunContext[AgentDeps], owner: str, repo: str) -> tuple[str, str]:
+    if owner and repo:
+        return owner, repo
+    default = _default_repo(ctx.deps.settings)
+    if "/" in default:
+        default_owner, _, default_repo = default.partition("/")
+        return owner or default_owner, repo or default_repo
+    raise ValueError(
+        "owner and repo are required: no default repository is configured "
+        "(set HENRY_GITHUB_DEFAULT_REPO to 'owner/repo')"
+    )
+
+
 async def search_code(ctx: RunContext[AgentDeps], query: str, repo: str | None = None, limit: int = 10) -> list[dict]:
-    """Search GitHub code and return redacted match summaries."""
+    """Search GitHub code. Scoped to the configured default repository unless `repo` is given."""
 
     per_page = max(1, min(limit, 25))
-    search_query = query if repo is None else f"{query} repo:{repo}"
+    scope = repo or _default_repo(ctx.deps.settings)
+    search_query = f"{query} repo:{scope}" if scope else query
     data = await _request_json(
         ctx,
         "GET",
@@ -102,13 +120,14 @@ async def search_code(ctx: RunContext[AgentDeps], query: str, repo: str | None =
 
 async def get_file(
     ctx: RunContext[AgentDeps],
-    owner: str,
-    repo: str,
-    path: str,
+    owner: str = "",
+    repo: str = "",
+    path: str = "",
     ref: str | None = None,
 ) -> dict[str, str]:
-    """Read a text file from a GitHub repository."""
+    """Read a text file from a GitHub repository. Omit owner/repo to use the configured default."""
 
+    owner, repo = _resolve_repo(ctx, owner, repo)
     params = {"ref": ref} if ref else None
     data = await _request_json(
         ctx,
@@ -139,14 +158,15 @@ async def get_file(
 
 async def list_commits(
     ctx: RunContext[AgentDeps],
-    owner: str,
-    repo: str,
+    owner: str = "",
+    repo: str = "",
     ref: str | None = None,
     path: str | None = None,
     limit: int = _DEFAULT_PER_PAGE,
 ) -> list[dict]:
-    """List recent commits for a GitHub repository."""
+    """List recent commits for a GitHub repository. Omit owner/repo to use the configured default."""
 
+    owner, repo = _resolve_repo(ctx, owner, repo)
     params: dict[str, Any] = {"per_page": max(1, min(limit, 25))}
     if ref:
         params["sha"] = ref
@@ -229,8 +249,10 @@ class GithubIntegration:
 
     def prompt_fragment(self) -> str:
         return (
-            "GitHub tools can search code, read files, and list commits. Pull request and issue creation "
-            "are unavailable unless the current Slack channel has explicit GitHub write capability."
+            "GitHub tools can search code, read files, and list commits. When a default repository is "
+            "configured, searches and reads are scoped to it unless another repository is named. "
+            "Pull request and issue creation are unavailable unless the current Slack channel has "
+            "explicit GitHub write capability."
         )
 
     def is_configured(self, settings: Any) -> bool:

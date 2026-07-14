@@ -278,3 +278,58 @@ def test_github_is_configured_requires_token() -> None:
 
     assert integration.is_configured(Settings(github_token="ghp_x")) is True
     assert integration.is_configured(Settings()) is False
+
+
+@pytest.mark.asyncio
+async def test_github_search_scopes_to_default_repo() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": []})
+
+    settings = SimpleNamespace(github_token="t", github_default_repo="conelike/amfj")
+    ctx, requests = _deps(handler, settings)
+
+    await search_code(ctx, "Verbindung zu Assets")  # type: ignore[arg-type]
+
+    assert "repo:conelike/amfj" in requests[0].url.params["q"]
+
+
+@pytest.mark.asyncio
+async def test_github_search_explicit_repo_overrides_default() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"items": []})
+
+    settings = SimpleNamespace(github_token="t", github_default_repo="conelike/amfj")
+    ctx, requests = _deps(handler, settings)
+
+    await search_code(ctx, "boom", repo="other/repo")  # type: ignore[arg-type]
+
+    q = requests[0].url.params["q"]
+    assert "repo:other/repo" in q
+    assert "conelike/amfj" not in q
+
+
+@pytest.mark.asyncio
+async def test_github_get_file_uses_default_repo_when_omitted() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        content = base64.b64encode(b"hello").decode("ascii")
+        return httpx.Response(200, json={"path": "README.md", "encoding": "base64", "content": content})
+
+    settings = SimpleNamespace(github_token="t", github_default_repo="conelike/amfj")
+    ctx, requests = _deps(handler, settings)
+
+    result = await get_file(ctx, path="README.md")  # type: ignore[arg-type]
+
+    assert "/repos/conelike/amfj/contents/README.md" in str(requests[0].url)
+    assert result["content"] == "hello"
+
+
+@pytest.mark.asyncio
+async def test_github_tools_require_repo_when_no_default() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request should be made")
+
+    settings = SimpleNamespace(github_token="t")
+    ctx, _ = _deps(handler, settings)
+
+    with pytest.raises(ValueError, match="HENRY_GITHUB_DEFAULT_REPO"):
+        await get_file(ctx, path="README.md")  # type: ignore[arg-type]

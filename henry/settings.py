@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     slack_app_token: str = ""
     default_model: str = "anthropic:claude-sonnet-4-6"
     github_token: str = ""
+    github_default_repo: str = ""  # "owner/repo"; used when tools omit owner/repo
     web_search_provider: str = "tavily"
     web_search_api_key: str = ""
     litellm_base_url: str = ""
