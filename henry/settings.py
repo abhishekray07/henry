@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     litellm_api_key: str = ""
     max_run_usd: float = Field(default=1.00, ge=0)
     sandbox_image: str = "henry-sandbox:base"
+    mcp_config_path: str = "mcp.json"
 
 
 @lru_cache

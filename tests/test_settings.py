@@ -21,3 +21,12 @@ def test_settings_read_henry_environment(monkeypatch) -> None:
     assert settings.slack_bot_token == "xoxb-test"
     assert settings.default_model == "openai:gpt-test"
     assert settings.litellm_base_url == "https://litellm.example"
+
+
+def test_mcp_config_path_default_and_explicit_tracking() -> None:
+    default = Settings()
+    assert default.mcp_config_path == "mcp.json"
+    assert "mcp_config_path" not in default.model_fields_set
+
+    explicit = Settings(mcp_config_path="custom.json")
+    assert "mcp_config_path" in explicit.model_fields_set
