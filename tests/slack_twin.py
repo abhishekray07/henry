@@ -93,6 +93,22 @@ class SlackTwin:
         )
         return ts  # the thread root
 
+    async def mention_in_thread(self, channel: str, thread_ts: str, user: str, text: str) -> str:
+        """A user @mentions henry inside an existing thread — an app_mention event with thread_ts."""
+        ts = self._next_ts()
+        await self._push_event(
+            {
+                "type": "app_mention",
+                "user": user,
+                "text": f"<@{BOT}> {text}",
+                "ts": ts,
+                "channel": channel,
+                "thread_ts": thread_ts,
+                "event_ts": ts,
+            }
+        )
+        return ts
+
     async def reply_in_thread(self, channel: str, thread_ts: str, user: str, text: str, **extra) -> None:
         """A user replies IN THE THREAD without @mentioning — arrives as a `message`
         event with thread_ts."""

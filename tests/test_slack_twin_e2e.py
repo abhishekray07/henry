@@ -182,46 +182,36 @@ async def test_wildcard_skips_unconfigured_github(stub_agent_tools, tmp_path, mo
         assert await _wait_final(twin, root) == "DONE-WITHOUT-GITHUB"
 
 
-async def test_thread_follow_up_gets_answered_without_a_mention(
+async def test_unmentioned_messages_stay_silent_even_in_henrys_threads(
     stub_agent_tools, tmp_path, monkeypatch
 ) -> None:
+    """V1 gate: Henry acts on direct @mentions only — including thread follow-ups
+    (docs/plans/2026-06-23-henry-design.md; ambient mode is a phase-2 feature)."""
     async with henry_on_twin(
         tmp_path, monkeypatch, servers={}, enabled=[], model=FunctionModel(driver_plain)
     ) as twin:
         root = await twin.mention(CH, "U1", "summarize this thread")
         assert await _wait_final(twin, root) == "ANSWERED"
-
         before = twin.bot_msgs(CH, root)
+
         await twin.reply_in_thread(CH, root, "U1", "yes, please go ahead")
-        assert await twin.wait_for_bot_reply(CH, root, since=before, timeout=15.0)
-
-
-async def test_thread_follow_up_stays_silent_for_other_bots_and_edits(
-    stub_agent_tools, tmp_path, monkeypatch
-) -> None:
-    async with henry_on_twin(
-        tmp_path, monkeypatch, servers={}, enabled=[], model=FunctionModel(driver_plain)
-    ) as twin:
-        root = await twin.mention(CH, "U1", "summarize this thread")
-        assert await _wait_final(twin, root) == "ANSWERED"
-        before = twin.bot_msgs(CH, root)
-
         await twin.reply_in_thread(CH, root, "U9", "beep", bot_id="B9")
         await twin.reply_in_thread(CH, root, "U1", "edited text", subtype="message_changed")
-        # A mention inside the thread is delivered as app_mention too; the
-        # message listener must not double-handle it.
-        await twin.reply_in_thread(CH, root, "U1", f"<@{BOT}> more please")
+        await twin.reply_in_thread(CH, "999.000000", "U1", "unrelated thread chatter")
 
         await asyncio.sleep(1.5)
         assert twin.bot_msgs(CH, root) == before
+        assert twin.bot_msgs(CH, "999.000000") == 0
 
 
-async def test_thread_follow_up_ignores_threads_henry_never_joined(
-    stub_agent_tools, tmp_path, monkeypatch
-) -> None:
+async def test_mention_inside_a_thread_is_answered(stub_agent_tools, tmp_path, monkeypatch) -> None:
     async with henry_on_twin(
         tmp_path, monkeypatch, servers={}, enabled=[], model=FunctionModel(driver_plain)
     ) as twin:
-        await twin.reply_in_thread(CH, "999.000000", "U1", "hello?")
-        await asyncio.sleep(1.5)
-        assert twin.bot_msgs(CH, "999.000000") == 0
+        root = await twin.mention(CH, "U1", "summarize this thread")
+        assert await _wait_final(twin, root) == "ANSWERED"
+        before = twin.bot_msgs(CH, root)
+
+        await twin.mention_in_thread(CH, root, "U1", "and now expand on that")
+
+        assert await twin.wait_for_bot_reply(CH, root, since=before, timeout=15.0)

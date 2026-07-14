@@ -75,7 +75,7 @@ def make_transcript_fetcher(
     return fetch
 
 
-def build_slack_event(body: Mapping[str, Any], *, is_mention: bool = True) -> SlackEvent:
+def build_slack_event(body: Mapping[str, Any]) -> SlackEvent:
     event = body.get("event")
     if not isinstance(event, Mapping):
         raise ValueError("Slack body is missing event payload")
@@ -100,7 +100,7 @@ def build_slack_event(body: Mapping[str, Any], *, is_mention: bool = True) -> Sl
         text=str(event.get("text") or ""),
         event_id=event_id,
         event_ts=event_ts,
-        is_mention=is_mention,
+        is_mention=True,
     )
 
 
