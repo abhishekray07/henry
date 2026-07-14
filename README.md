@@ -113,5 +113,17 @@ Rules of thumb:
 - Optional per-server keys: `description` (shown to the model), `init_timeout` (default 5s),
   `read_timeout` (default 60s).
 
+## Smoke test
+
+After changing agent, tool, or config code, verify against the real stack — automated
+tests can't catch a wrong assumption they share with the code:
+
+```bash
+uv run python scripts/smoke.py   # with the bot running; mention @Henry when prompted
+```
+
+The script watches `audit_log` for the run and reports its status, latency, cost, and
+— on failure — the exact error.
+
 ## License
 AGPL-3.0-or-later. Contributions require signing the CLA ([`CLA.md`](CLA.md)).
