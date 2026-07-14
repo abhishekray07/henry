@@ -1,6 +1,6 @@
 {
   "model": "",
-  "enabled_integrations": [],
+  "enabled_integrations": "*",
   "system_prompt": "You are Henry, a helpful AI teammate working in Slack.",
   "ambient_on": false,
   "budget_caps": {"max_run_usd": 1.0}

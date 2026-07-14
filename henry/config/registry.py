@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -14,7 +14,7 @@ class ResolvedConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str
-    enabled_integrations: list[str] = Field(default_factory=list)
+    enabled_integrations: list[str] | Literal["*"] = Field(default_factory=list)
     system_prompt: str
     ambient_on: bool = False
     budget_caps: dict[str, Any] = Field(default_factory=dict)
@@ -54,6 +54,11 @@ def _row_to_overrides(row: Any) -> dict[str, Any]:
             if hasattr(row, name)
         }
     data.pop("channel_id", None)
+    if data.get("enabled_integrations") == "*":
+        raise ValueError(
+            "channel_config.enabled_integrations must be an explicit list; "
+            "'*' is only supported as the built-in default"
+        )
     return {key: value for key, value in data.items() if value not in (None, "")}
 
 
@@ -76,7 +81,7 @@ async def load_channel_config(
     raw = _deep_merge(_load_defaults(), _row_to_overrides(row))
     resolved = ResolvedConfig.model_validate(raw)
 
-    if known_integrations is not None:
+    if known_integrations is not None and resolved.enabled_integrations != "*":
         unknown = set(resolved.enabled_integrations) - known_integrations
         if unknown:
             names = ", ".join(sorted(unknown))

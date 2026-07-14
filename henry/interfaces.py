@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, Protocol, Sequence, runtime_checkable
+from typing import Any, Literal, Protocol, Sequence, runtime_checkable
 
 from henry.contracts import ToolSpec
 from henry.sandbox_types import ExecRequest, ExecResult, SandboxPolicy
@@ -50,3 +50,14 @@ class Integration(Protocol):
     def tools(self) -> list[ToolSpec]: ...
 
     def prompt_fragment(self) -> str: ...
+
+
+@runtime_checkable
+class ToolsetProvider(Protocol):
+    """Optional integration capability: contribute a pydantic-ai toolset (e.g. an MCP server).
+
+    Deliberately separate from Integration so existing runtime_checkable isinstance
+    checks on Integration implementers stay valid.
+    """
+
+    def toolset(self) -> Any: ...

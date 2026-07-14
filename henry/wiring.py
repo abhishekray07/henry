@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -10,6 +11,7 @@ from henry.agent.runner import PydanticAgentRunner
 from henry.config.registry import ResolvedConfig, load_channel_config
 from henry.contracts import AgentDeps, AgentRunner, SlackEvent
 from henry.db.session import make_engine, make_sessionmaker
+from henry.integrations.mcp import MCPIntegration, load_mcp_config
 from henry.integrations.registry import discover
 from henry.interfaces import Integration, Sandbox
 from henry.memory.postgres import PostgresMemory
@@ -24,6 +26,8 @@ from henry.sandbox.docker import DockerSandbox
 from henry.sandbox.tools import clear_sandbox_session
 from henry.settings import Settings, get_settings
 from henry.types import ChannelContext
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -40,7 +44,9 @@ class RunSettings:
         return self.config.system_prompt
 
     @property
-    def enabled_integrations(self) -> tuple[str, ...]:
+    def enabled_integrations(self) -> tuple[str, ...] | Literal["*"]:
+        if self.config.enabled_integrations == "*":
+            return "*"
         return tuple(self.config.enabled_integrations)
 
     @property
@@ -103,8 +109,20 @@ class HenryRuntime:
         )
 
     async def close(self) -> None:
-        await self.http.aclose()
-        await self.engine.dispose()
+        for integration in self.integrations.values():
+            if isinstance(integration, MCPIntegration):
+                try:
+                    await integration.aclose()
+                except Exception:  # noqa: BLE001 - continue shutting down remaining resources
+                    _LOG.warning(
+                        "failed to close mcp server %r; its process may be orphaned",
+                        integration.name,
+                        exc_info=True,
+                    )
+        try:
+            await self.http.aclose()
+        finally:
+            await self.engine.dispose()
 
 
 def build_runtime(
@@ -116,9 +134,23 @@ def build_runtime(
     integrations: dict[str, Integration] | None = None,
 ) -> HenryRuntime:
     runtime_settings = settings or get_settings()
+
+    if integrations is not None:
+        registry = integrations
+    else:
+        registry = discover()
+        mcp_definitions = load_mcp_config(
+            runtime_settings.mcp_config_path,
+            explicit="mcp_config_path" in runtime_settings.model_fields_set,
+        )
+        overlap = sorted(set(registry) & set(mcp_definitions))
+        if overlap:
+            raise ValueError(f"mcp server name(s) collide with builtin integrations: {', '.join(overlap)}")
+        for name, definition in mcp_definitions.items():
+            registry[name] = MCPIntegration(name, definition)
+
     runtime_engine = engine or make_engine(runtime_settings)
     sessionmaker = make_sessionmaker(runtime_engine)
-    registry = integrations if integrations is not None else discover()
     memory = PostgresMemory(sessionmaker)
     runtime_http = http or httpx.AsyncClient()
     runtime_sandbox = sandbox or DockerSandbox()

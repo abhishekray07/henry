@@ -88,3 +88,16 @@ async def test_empty_model_resolves_to_empty_and_defers_to_runtime_default() -> 
     resolved = await load_channel_config(FakeSession(row), "C123")
 
     assert resolved.model == ""
+
+
+async def test_defaults_enable_all_integrations() -> None:
+    resolved = await load_channel_config(FakeSession(None), "C123", known_integrations={"github"})
+
+    assert resolved.enabled_integrations == "*"
+
+
+async def test_wildcard_is_rejected_in_channel_rows() -> None:
+    row = {"channel_id": "C123", "enabled_integrations": "*"}
+
+    with pytest.raises(ValueError, match="explicit list"):
+        await load_channel_config(FakeSession(row), "C123", known_integrations={"github"})

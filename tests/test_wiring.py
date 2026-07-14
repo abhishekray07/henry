@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -78,6 +80,150 @@ def test_run_settings_uses_env_default_model_when_channel_model_is_empty() -> No
     )
 
     assert run_settings.default_model == "env:model"
+
+
+def _mcp_file(tmp_path, servers) -> str:
+    path = tmp_path / "mcp.json"
+    path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    return str(path)
+
+
+async def test_build_runtime_merges_mcp_servers_into_registry(tmp_path) -> None:
+    from henry.integrations.mcp import MCPIntegration
+
+    path = _mcp_file(tmp_path, {"tickets": {"url": "https://example.com/mcp"}})
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:", default_model="test", mcp_config_path=path
+    )
+
+    runtime = build_runtime(settings, http=httpx.AsyncClient(), sandbox=FakeSandbox())
+    try:
+        assert "tickets" in runtime.integrations
+        assert isinstance(runtime.integrations["tickets"], MCPIntegration)
+        assert "github" in runtime.integrations
+    finally:
+        await runtime.close()
+
+
+async def test_build_runtime_rejects_mcp_name_colliding_with_builtin(tmp_path) -> None:
+    path = _mcp_file(tmp_path, {"github": {"url": "https://example.com/mcp"}})
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:", default_model="test", mcp_config_path=path
+    )
+
+    http = httpx.AsyncClient()
+    try:
+        with pytest.raises(ValueError, match="github"):
+            build_runtime(settings, http=http, sandbox=FakeSandbox())
+    finally:
+        await http.aclose()
+
+
+async def test_build_runtime_validates_config_before_allocating_engine(tmp_path, monkeypatch) -> None:
+    path = _mcp_file(tmp_path, {"bad name!": {"url": "https://example.com/mcp"}})
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:", default_model="test", mcp_config_path=path
+    )
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("engine allocated before config validation")
+
+    monkeypatch.setattr("henry.wiring.make_engine", _fail_if_called)
+    http = httpx.AsyncClient()
+    try:
+        with pytest.raises(ValueError, match="bad name!"):
+            build_runtime(settings, http=http, sandbox=FakeSandbox())
+    finally:
+        await http.aclose()
+
+
+async def test_integrations_override_skips_mcp_loading(tmp_path) -> None:
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:",
+        default_model="test",
+        mcp_config_path=str(tmp_path / "does-not-exist.json"),
+    )
+    runtime = build_runtime(
+        settings,
+        http=httpx.AsyncClient(),
+        sandbox=FakeSandbox(),
+        integrations={"fake": FakeIntegration()},
+    )
+    try:
+        assert set(runtime.integrations) == {"fake"}
+    finally:
+        await runtime.close()
+
+
+async def test_close_calls_aclose_on_mcp_integrations(tmp_path) -> None:
+    path = _mcp_file(tmp_path, {"tickets": {"url": "https://example.com/mcp"}})
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:", default_model="test", mcp_config_path=path
+    )
+    runtime = build_runtime(settings, http=httpx.AsyncClient(), sandbox=FakeSandbox())
+
+    closed = []
+
+    async def spy_aclose():
+        closed.append("tickets")
+
+    runtime.integrations["tickets"].aclose = spy_aclose  # type: ignore[attr-defined,method-assign]
+    await runtime.close()
+
+    assert closed == ["tickets"]
+
+
+async def test_close_survives_one_failing_mcp_server_and_still_disposes_engine(
+    tmp_path, caplog, monkeypatch
+) -> None:
+    path = _mcp_file(
+        tmp_path,
+        {
+            "first": {"url": "https://example.com/mcp"},
+            "second": {"url": "https://example.com/mcp"},
+        },
+    )
+    settings = Settings(
+        database_url="sqlite+aiosqlite:///:memory:", default_model="test", mcp_config_path=path
+    )
+    runtime = build_runtime(settings, http=httpx.AsyncClient(), sandbox=FakeSandbox())
+
+    closed: list[str] = []
+
+    async def failing_aclose():
+        raise RuntimeError("stuck subprocess")
+
+    async def ok_aclose():
+        closed.append("second")
+
+    runtime.integrations["first"].aclose = failing_aclose  # type: ignore[attr-defined,method-assign]
+    runtime.integrations["second"].aclose = ok_aclose  # type: ignore[attr-defined,method-assign]
+
+    disposed: list[bool] = []
+    original_dispose = runtime.engine.dispose
+
+    async def spy_dispose(_engine):
+        disposed.append(True)
+        await original_dispose()
+
+    monkeypatch.setattr(type(runtime.engine), "dispose", spy_dispose)
+
+    with caplog.at_level("WARNING"):
+        await runtime.close()
+
+    assert closed == ["second"]
+    assert disposed == [True]
+    assert any("first" in record.getMessage() for record in caplog.records)
+
+
+def test_run_settings_passes_wildcard_enabled_integrations_through() -> None:
+    settings = Settings(default_model="env:model")
+    run_settings = RunSettings(
+        settings,
+        ResolvedConfig(model="", system_prompt="prompt", enabled_integrations="*"),
+    )
+
+    assert run_settings.enabled_integrations == "*"
 
 
 async def test_handle_event_uses_configured_transcript_fetcher() -> None:

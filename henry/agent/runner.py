@@ -15,7 +15,7 @@ from henry.agent._tools import memory_tools, sandbox_tools
 from henry.agent.model import build_model
 from henry.agent.prompt import build_instructions
 from henry.contracts import AgentDeps, RunResult, RunUsage
-from henry.interfaces import Integration
+from henry.interfaces import Integration, ToolsetProvider
 from henry.types import ConversationTranscript
 
 
@@ -55,9 +55,13 @@ class PydanticAgentRunner:
         user_prompt: str,
         transcript: ConversationTranscript | None = None,
     ) -> RunResult:
+        toolset_names: tuple[str, ...] = ()
         try:
             snapshot = await deps.memory.snapshot(deps.ctx.channel_id)
             integrations = self._active_integrations(deps)
+            providers = [i for i in integrations if isinstance(i, ToolsetProvider)]
+            toolset_names = tuple(p.name for p in providers)
+            toolsets = [p.toolset() for p in providers]
             instructions = build_instructions(
                 getattr(deps.settings, "system_prompt", self._base_instructions) or self._base_instructions,
                 snapshot,
@@ -72,6 +76,7 @@ class PydanticAgentRunner:
                     *memory_tools(),
                     *sandbox_tools(),
                 ],
+                toolsets=toolsets or None,
             )
             result = await agent.run(
                 self._render_prompt(user_prompt, transcript),
@@ -90,7 +95,7 @@ class PydanticAgentRunner:
                 error=str(exc),
             )
         except Exception as exc:
-            return _error_result(exc)
+            return _error_result(exc, toolset_names)
 
     def _build_model(self, deps: AgentDeps) -> Model | str:
         if isinstance(self._model, str):
@@ -101,7 +106,7 @@ class PydanticAgentRunner:
 
     def _active_integrations(self, deps: AgentDeps) -> tuple[Integration, ...]:
         enabled = getattr(deps.settings, "enabled_integrations", None)
-        if enabled is None:
+        if enabled is None or enabled == "*":
             return self._integrations
 
         by_name = {integration.name: integration for integration in self._integrations}
@@ -154,9 +159,12 @@ def _compute_cost_usd(messages: Sequence[Any]) -> float | None:
     return float(total) if found else None
 
 
-def _error_result(exc: Exception) -> RunResult:
+def _error_result(exc: Exception, toolset_names: tuple[str, ...] = ()) -> RunResult:
+    detail = f"{type(exc).__name__}: {exc}"
+    if toolset_names:
+        detail += f" (external toolsets active: {', '.join(toolset_names)})"
     return RunResult(
         output="Henry could not complete the request because the agent run failed.",
         status="error",
-        error=f"{type(exc).__name__}: {exc}",
+        error=detail,
     )
