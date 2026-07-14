@@ -117,12 +117,15 @@ async def handle_request(
             run_id=run_id,
         )
         started = time.perf_counter()
-        config = await _maybe_await(config_loader(event))
-        transcript = await _maybe_await(transcript_fetcher(event))
+        config: ResolvedConfig | None = None
         deps: AgentDeps | None = None
         result: RunResult
 
         try:
+            # Config and transcript loading run inside the audited block: a bad
+            # channel_config row must produce an audit record, not a silent abort.
+            config = await _maybe_await(config_loader(event))
+            transcript = await _maybe_await(transcript_fetcher(event))
             deps = await _maybe_await(deps_factory(ctx, config))
             result = await runner.run(deps, event.text, transcript)
             if result.status == "ok":
@@ -142,7 +145,7 @@ async def handle_request(
                     thread_ts=event.thread_ts,
                     actor=event.user,
                     action="agent.run",
-                    model=config.model,
+                    model=config.model if config is not None else "",
                     input_tokens=result.usage.input_tokens,
                     output_tokens=result.usage.output_tokens,
                     cost_usd=result.usage.cost_usd,

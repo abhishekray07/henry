@@ -139,3 +139,32 @@ async def test_handle_request_audits_runner_exception_and_returns_error_chunk() 
     assert audit.records[0].status == "error"
     assert "model unavailable" in (audit.records[0].error or "")
     assert memory.refreshed == []
+
+
+@pytest.mark.asyncio
+async def test_handle_request_audits_config_loader_failure() -> None:
+    """A bad channel_config row must produce an audit record, not a silent abort."""
+    memory = FakeMemory()
+    audit = RecordingAuditSink()
+
+    async def bad_config_loader(event: SlackEvent) -> ResolvedConfig:
+        raise ValueError("channel_config.enabled_integrations must be an explicit list")
+
+    async def deps_factory(ctx: ChannelContext, config: ResolvedConfig) -> AgentDeps:
+        raise AssertionError("deps_factory must not run when config loading fails")
+
+    chunks = await handle_request(
+        _event(),
+        runner=FakeAgentRunner(),
+        memory=memory,
+        deps_factory=deps_factory,
+        config_loader=bad_config_loader,
+        transcript_fetcher=_transcript_fetcher,
+        audit_sink=audit,
+    )
+
+    assert chunks == ["I hit an internal error while handling that request."]
+    assert len(audit.records) == 1
+    assert audit.records[0].status == "error"
+    assert "explicit list" in (audit.records[0].error or "")
+    assert audit.records[0].model == ""
