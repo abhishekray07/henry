@@ -36,7 +36,7 @@ def test_parses_stdio_and_url_servers(tmp_path, monkeypatch) -> None:
     assert definitions["helpscout"].url == "https://example.com/mcp"
     assert definitions["helpscout"].headers["Authorization"] == "Bearer sk-live"
     assert definitions["helpscout"].tools == ["get_conversation"]
-    assert definitions["helpscout"].on_tool_error == "error"
+    assert definitions["helpscout"].on_tool_error == "retry"
     assert definitions["helpscout"].read_timeout == 30
     assert definitions["files"].command == "npx"
     assert definitions["files"].args[-1] == "/data"

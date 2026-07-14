@@ -35,7 +35,10 @@ class MCPServerDef(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     description: str = ""
     tools: list[str] | None = None
-    on_tool_error: Literal["error", "retry"] = "error"
+    # "retry" feeds the error back to the model as a ModelRetry so it can self-correct
+    # (e.g. a 404 from a mistyped id); it never re-executes a call by itself. "error"
+    # propagates the ToolError and fails the whole run — opt-in for fail-fast servers.
+    on_tool_error: Literal["error", "retry"] = "retry"
     init_timeout: float = 5.0
     read_timeout: float = 60.0
 

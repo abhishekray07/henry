@@ -103,8 +103,10 @@ Rules of thumb:
 - Server names become tool prefixes; use `[a-zA-Z0-9_-]`, max 64 chars.
 - **Allowlist third-party servers** with `"tools": [...]` — only the listed tools are
   exposed. Henry can't know which tools mutate data; you can.
-- Tool errors are not retried by default (retrying a "send reply" can send it twice).
-  Set `"on_tool_error": "retry"` per server only if its tools are idempotent.
+- Tool errors go back to the model by default (`"on_tool_error": "retry"`), so it can
+  self-correct — e.g. fix a mistyped id after a 404. This never re-executes a call by
+  itself; the model decides whether to try again. Set `"on_tool_error": "error"` per
+  server if you'd rather fail the whole run on any tool error.
 - Henry ignores server-provided instructions and escapes its own framing tags in tool
   output. That protects Henry's prompt structure — it does **not** make a malicious
   server safe. Only configure servers you trust, and allowlist their tools.

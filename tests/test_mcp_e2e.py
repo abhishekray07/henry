@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 
 import httpx
+from pydantic_ai.messages import ModelMessage, ModelResponse, RetryPromptPart, TextPart, ToolCallPart
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from henry.agent.runner import PydanticAgentRunner
 from henry.contracts import SlackEvent
@@ -93,6 +95,51 @@ async def test_one_unreachable_server_costs_only_its_own_tools(stub_agent_tools,
     finally:
         await healthy.aclose()
         await broken.aclose()
+
+
+async def test_tool_error_feeds_back_so_the_model_can_self_correct(stub_agent_tools, agent_deps) -> None:
+    """A 404-style tool error must reach the model as data, not kill the run.
+
+    Mirrors the Help Scout failure: the model picks the wrong number out of a URL,
+    the API 404s, and the model must get a chance to retry with the right id.
+    """
+    integration = MCPIntegration("lookup", _stdio_def("lookup_mcp_server.py"))
+    seen_retry_content: list[str] = []
+
+    def driver(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        retry = next((p for p in messages[-1].parts if isinstance(p, RetryPromptPart)), None)
+        if retry is not None:
+            seen_retry_content.append(str(retry.content))
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="lookup_get_conversation",
+                        args={"conversation_id": "3384773514"},
+                    )
+                ]
+            )
+        if len(messages) == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        tool_name="lookup_get_conversation",
+                        args={"conversation_id": "5261"},
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart(content="found it: customer cannot log in")])
+
+    try:
+        runner = PydanticAgentRunner([integration], model=FunctionModel(driver))
+
+        result = await runner.run(agent_deps, "help me debug conversation/3384773514/5261")
+
+        assert result.status == "ok"
+        assert "found it" in result.output
+        assert len(seen_retry_content) == 1
+        assert "404" in seen_retry_content[0]
+    finally:
+        await integration.aclose()
 
 
 async def test_aclose_never_raises_for_a_server_that_never_connected() -> None:
