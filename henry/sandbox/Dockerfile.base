@@ -11,4 +11,9 @@ RUN apt-get update \
         npm \
     && rm -rf /var/lib/apt/lists/*
 
+COPY requirements-kernel.txt /opt/henry_kernel/requirements-kernel.txt
+RUN pip install --no-cache-dir -r /opt/henry_kernel/requirements-kernel.txt
+
+COPY kernel_protocol.py kernel_entry.py /opt/henry_kernel/
+
 WORKDIR /workspace
