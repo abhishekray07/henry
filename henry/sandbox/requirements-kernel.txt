@@ -1,0 +1,4 @@
+# Container-side kernel deps for henry-sandbox:base. Direct pins only;
+# see the plan's reproducibility caveat for what is NOT yet locked.
+jupyter_client==8.6.3
+ipykernel==6.29.5
