@@ -17,6 +17,8 @@ import uuid
 from aiohttp import WSMsgType, web
 
 BOT = "UBOT"
+# Mirrors henry/slack/app.py — the text henry posts before it has an answer.
+PLACEHOLDER = "Working on it..."
 
 
 class SlackTwin:
@@ -144,6 +146,37 @@ class SlackTwin:
 
     def bot_msgs(self, channel: str, thread_ts: str) -> int:
         return len([m for m in self.threads.get((channel, thread_ts), []) if m.get("user") == BOT])
+
+    def bot_texts(self, channel: str, thread_ts: str) -> list[str]:
+        """Every message henry has in this thread, placeholder included.
+
+        Henry posts a placeholder and then chat.update's it in place, so a text
+        read here reflects the latest edit — same as opening the thread in Slack.
+        """
+        return [m["text"] for m in self.threads.get((channel, thread_ts), []) if m.get("user") == BOT]
+
+    async def wait_for_final(
+        self,
+        channel: str,
+        thread_ts: str,
+        *,
+        timeout: float = 30.0,
+        placeholder: str = PLACEHOLDER,
+    ) -> str:
+        """Henry's first real answer in this thread, or a marker string on timeout.
+
+        Waits past the placeholder: a run that calls tools edits the placeholder
+        into the answer, so the message existing is not the same as it being done.
+        """
+        import asyncio
+
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for text in self.bot_texts(channel, thread_ts):
+                if text and text != placeholder:
+                    return text
+            await asyncio.sleep(0.05)
+        return "(no final reply within timeout)"
 
     # ---- server ----
     async def start(self) -> str:
