@@ -17,6 +17,15 @@ except ImportError:  # pragma: no cover - the image copies these as standalone m
 CONNECTION_FILE = "/workspace/.henry/kernel.json"
 
 
+def _connection_file() -> str:
+    """Where the kernel's connection file lives.
+
+    The host sets this from the sandbox policy's workdir; only that path is
+    writable, so a hardcoded default cannot serve a non-default workdir.
+    """
+    return os.environ.get("HENRY_KERNEL_CONNECTION_FILE") or CONNECTION_FILE
+
+
 def _blocking_client(connection_file: str):
     from jupyter_client import BlockingKernelClient
 
@@ -26,9 +35,10 @@ def _blocking_client(connection_file: str):
 def _boot() -> None:
     from jupyter_client import KernelManager
 
-    os.makedirs(os.path.dirname(CONNECTION_FILE), exist_ok=True)
+    connection_file = _connection_file()
+    os.makedirs(os.path.dirname(connection_file), exist_ok=True)
     manager = KernelManager(kernel_name="python3")
-    manager.connection_file = CONNECTION_FILE
+    manager.connection_file = connection_file
     manager.start_kernel()
     manager.write_connection_file()
 
@@ -47,7 +57,7 @@ def _boot() -> None:
 
 
 def _exec(code: str) -> None:
-    client = _blocking_client(CONNECTION_FILE)
+    client = _blocking_client(_connection_file())
     client.load_connection_file()
     client.start_channels()
     try:
@@ -62,7 +72,7 @@ def _exec(code: str) -> None:
 
 def _ping() -> int:
     try:
-        client = _blocking_client(CONNECTION_FILE)
+        client = _blocking_client(_connection_file())
         client.load_connection_file()
         client.start_channels()
         try:

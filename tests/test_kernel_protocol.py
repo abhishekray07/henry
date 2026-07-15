@@ -113,6 +113,31 @@ def test_ignores_foreign_parent() -> None:
     assert [output["text"] for output in result["outputs"]] == ["mine"]
 
 
+def test_broken_iopub_channel_gives_up_instead_of_spinning() -> None:
+    class _BrokenChannel:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, code, silent=False, store_history=True, allow_stdin=True) -> str:
+            return "msg-1"
+
+        def get_iopub_msg(self, timeout):
+            # A dead socket fails instantly rather than waiting out the timeout,
+            # so retrying it unthrottled burns CPU until the deadline.
+            self.calls += 1
+            raise OSError("socket is closed")
+
+        def get_shell_msg(self, timeout):
+            raise queue.Empty()
+
+    client = _BrokenChannel()
+    result = drain_execution(client, None, "code", timeout=30.0)
+
+    assert result["status"] == "error"
+    assert result["timed_out"] is False
+    assert client.calls <= 10, f"busy-spun {client.calls} times on a dead channel"
+
+
 def test_timeout_flags_and_returns_partial() -> None:
     client = _FakeClient([_io("stream", {"name": "stdout", "text": "partial"})])
     result = drain_execution(client, None, "loop", timeout=0.01)

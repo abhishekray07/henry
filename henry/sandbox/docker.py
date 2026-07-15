@@ -48,6 +48,25 @@ class SandboxArchiveError(SandboxError):
 
 
 KERNEL_ENTRY = "/opt/henry_kernel/kernel_entry.py"
+
+# Make `!cmd` report failure. run_python advertises shell escapes, but ipykernel's
+# ZMQInteractiveShell overrides system_piped without consulting IPython's
+# system_raise_on_error trait, so `!false` would otherwise be an "ok" cell with no
+# output — indistinguishable from success. Wrap the bound method instead, and keep
+# the helper out of the user namespace.
+_KERNEL_STARTUP = """
+def _henry_install_shell_error_propagation():
+    shell = get_ipython()
+    original = shell.system
+    def checked(cmd):
+        original(cmd)
+        code = shell.user_ns.get("_exit_code", 0)
+        if code:
+            raise RuntimeError(f"shell command failed (exit {code}): {cmd}")
+    shell.system = checked
+_henry_install_shell_error_propagation()
+del _henry_install_shell_error_propagation
+"""
 _DEFAULT_READY_TIMEOUT_S = 30.0
 _MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 _CELL_EXEC_GRACE_S = 15.0
@@ -112,6 +131,13 @@ class DockerSandbox:
                         "HOME": "/tmp",
                         "JUPYTER_RUNTIME_DIR": "/tmp/jupyter-runtime",
                         "IPYTHONDIR": "/tmp/ipython",
+                        # Only the workspace mount is writable, so the connection
+                        # file has to follow workdir. `docker exec` inherits this,
+                        # keeping boot, ping, and exec pointed at one path.
+                        "HENRY_KERNEL_CONNECTION_FILE": posixpath.join(
+                            policy.workdir, ".henry", "kernel.json"
+                        ),
+                        "HENRY_KERNEL_STARTUP": _KERNEL_STARTUP,
                     },
                     tmpfs=tmpfs,
                     mounts=[
@@ -145,9 +171,29 @@ class DockerSandbox:
             await asyncio.shield(self._remove_session(session, force=True))
             raise
         except Exception as exc:
+            # Capture boot output before teardown: a kernel that never starts is
+            # otherwise indistinguishable from a slow one.
+            logs = await self._session_logs(session)
             await self._remove_session(session, force=True)
-            raise SandboxError("sandbox kernel did not become ready") from exc
+            detail = f": {logs}" if logs else ""
+            raise SandboxError(f"sandbox kernel did not become ready{detail}") from exc
         return session
+
+    async def _session_logs(self, session: str, tail: int = 50) -> str:
+        state = self._sessions.get(session)
+        if state is None:
+            return ""
+
+        def _logs() -> str:
+            raw = state.container.logs(tail=tail)
+            if isinstance(raw, bytes):
+                return raw.decode("utf-8", errors="replace").strip()
+            return str(raw).strip()
+
+        try:
+            return await asyncio.to_thread(_logs)
+        except Exception:
+            return ""
 
     async def _wait_ready(self, session: str, timeout_s: float) -> None:
         state = self._get_session(session)
@@ -216,7 +262,7 @@ class DockerSandbox:
 
     async def exec_cell(self, session: str, code: str, timeout_s: int | None = None) -> CellResult:
         state = self._get_session(session)
-        timeout = timeout_s if timeout_s is not None else state.policy.default_timeout_s
+        timeout = _bounded_timeout(timeout_s, state.policy)
         code_b64 = base64.b64encode(code.encode("utf-8")).decode("ascii")
 
         def _exec_run() -> Any:
@@ -265,6 +311,7 @@ class DockerSandbox:
 
             if result.timed_out:
                 await self._invalidate_locked(state, session)
+                result.session_invalidated = True
             return result
 
     def _cell_result_from_payload(self, payload: Any) -> CellResult:
@@ -508,10 +555,24 @@ class DockerSandbox:
         return int((time.monotonic() - started) * 1000)
 
 
+def _bounded_timeout(timeout_s: int | None, policy: SandboxPolicy) -> int:
+    """Clamp a caller-supplied cell timeout into the policy's allowed range.
+
+    Rejecting a non-positive timeout is deliberate: clamping it up would let a
+    bad call silently expire and tear the session down instead of erroring.
+    """
+    if timeout_s is None:
+        return policy.default_timeout_s
+    if timeout_s <= 0:
+        raise ValueError(f"timeout_s must be positive, got {timeout_s}")
+    return min(timeout_s, policy.max_timeout_s)
+
+
 def _timeout_cell(timeout: int) -> CellResult:
     return CellResult(
         status="error",
         timed_out=True,
+        session_invalidated=True,
         outputs=[
             CellOutput(
                 output_type="error",
@@ -526,6 +587,7 @@ def _timeout_cell(timeout: int) -> CellResult:
 def _transport_error_cell(message: str) -> CellResult:
     return CellResult(
         status="error",
+        session_invalidated=True,
         outputs=[
             CellOutput(
                 output_type="error",

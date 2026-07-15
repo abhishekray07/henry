@@ -13,6 +13,9 @@ class SandboxPolicy:
     network: str = "none"
     allow_domains: tuple[str, ...] = ()
     default_timeout_s: int = 120
+    # Ceiling for caller-supplied cell timeouts. The model picks `timeout_s`, so
+    # an unbounded value would let one cell hold a container for as long as it likes.
+    max_timeout_s: int = 600
     ttl_s: int = 900
 
 
@@ -56,3 +59,8 @@ class CellResult:
     execution_count: int = 0
     timed_out: bool = False
     truncated: bool = False
+    # Set only by the Sandbox implementation, never decoded from kernel output:
+    # sandboxed code controls every field an output carries, including `ename`,
+    # so callers must not infer teardown from them. True means the sandbox has
+    # already destroyed this session and the caller must drop its handle.
+    session_invalidated: bool = False

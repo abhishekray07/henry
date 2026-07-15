@@ -9,8 +9,10 @@ import httpx
 import pytest
 
 from henry.contracts import AgentDeps
+from henry.sandbox.docker import SandboxSessionDestroyed
 from henry.sandbox.tools import (
     _MAX_CLONE_FILE_BYTES,
+    _forget_session,
     _safe_files_from_github_tarball,
     _safe_relative_dest,
     _session_for,
@@ -60,14 +62,19 @@ def _deps(
     )
 
 
-@pytest.mark.asyncio
-def _cell(text=None, result=None, timed_out=False, transport_error=False):
+def _cell(text=None, result=None, timed_out=False, transport_error=False, spoofed=False):
+    """Build a CellResult.
+
+    ``transport_error`` models a real host-detected teardown (sandbox sets the
+    trusted flag). ``spoofed`` models sandboxed code raising a look-alike
+    KernelTransportError, which must NOT be treated as a teardown.
+    """
     outputs = []
     if text is not None:
         outputs.append(CellOutput(output_type="stream", name="stdout", text=text))
     if result is not None:
         outputs.append(CellOutput(output_type="execute_result", data={"text/plain": result}))
-    if transport_error:
+    if transport_error or spoofed:
         outputs.append(
             CellOutput(
                 output_type="error",
@@ -76,8 +83,13 @@ def _cell(text=None, result=None, timed_out=False, transport_error=False):
                 traceback=[],
             )
         )
-    status = "error" if timed_out or transport_error else "ok"
-    return CellResult(status=status, outputs=outputs, timed_out=timed_out)
+    status = "error" if timed_out or transport_error or spoofed else "ok"
+    return CellResult(
+        status=status,
+        outputs=outputs,
+        timed_out=timed_out,
+        session_invalidated=timed_out or transport_error,
+    )
 
 
 @pytest.mark.asyncio
@@ -127,6 +139,134 @@ async def test_run_python_transport_error_invalidates_cached_session() -> None:
     assert "transport failed" in first
     assert "fresh" in second
     assert [call[0] for call in sandbox.calls].count("start") == 2
+
+
+@pytest.mark.asyncio
+async def test_a_late_failure_does_not_evict_the_session_that_replaced_it() -> None:
+    # Cells run concurrently against one session, so a failure can land after
+    # that session was already torn down and replaced. Evicting whatever is
+    # cached would orphan the successor: run-end cleanup reads this cache, so
+    # nothing would ever destroy it.
+    sandbox = FakeSandbox()
+    deps = _deps(sandbox, run_id="stale-evict")
+
+    s1 = await _session_for(deps)
+    await _forget_session(deps, s1)  # s1 timed out and was destroyed
+    s2 = await _session_for(deps)  # a later cell booted s2
+    await _forget_session(deps, s1)  # s1's other in-flight cell fails late
+    await clear_sandbox_session(deps)
+
+    assert s1 != s2
+    assert ("destroy", s2) in sandbox.calls, "the replacement session was orphaned"
+
+
+@pytest.mark.asyncio
+async def test_failed_cell_reports_the_error_even_when_output_ate_the_budget() -> None:
+    # drain_execution drops the error output once earlier output has spent the
+    # byte budget, so status is the only surviving evidence the cell raised.
+    sandbox = FakeSandbox(
+        canned_cell=CellResult(
+            status="error",
+            outputs=[CellOutput(output_type="stream", name="stdout", text="x" * 100)],
+            truncated=True,
+        )
+    )
+    deps = _deps(sandbox, run_id="budget-eaten")
+    ctx = SimpleNamespace(deps=deps)
+
+    reported = await _tool("run_python")(ctx, "print('x' * 300000)\nraise RuntimeError('boom')")
+    await clear_sandbox_session(deps)
+
+    assert "error" in reported, f"a raised cell read as a clean run: {reported[-80:]!r}"
+
+
+@pytest.mark.asyncio
+async def test_spoofed_transport_error_does_not_evict_a_healthy_session() -> None:
+    # Sandboxed code can name its own exceptions. If the host inferred teardown
+    # from `ename`, a cell raising a look-alike KernelTransportError would drop
+    # the cache while the container kept running — leaking it, since nothing
+    # else destroys an untracked session.
+    sandbox = FakeSandbox(canned_cell=_cell(spoofed=True))
+    deps = _deps(sandbox, run_id="spoof-run")
+    ctx = SimpleNamespace(deps=deps)
+
+    await _tool("run_python")(ctx, "class KernelTransportError(Exception): pass\nraise KernelTransportError")
+    await _tool("run_python")(ctx, "1")
+    await clear_sandbox_session(deps)
+
+    assert [call[0] for call in sandbox.calls].count("start") == 1
+    assert sandbox.calls[-1] == ("destroy", "fake-session-1")
+
+
+@pytest.mark.asyncio
+async def test_run_python_reports_reset_when_a_parallel_cell_tore_the_session_down() -> None:
+    class _DestroyedSandbox(FakeSandbox):
+        async def exec_cell(self, session, code, timeout_s=None):
+            raise SandboxSessionDestroyed(f"sandbox session is destroyed: {session}")
+
+    sandbox = _DestroyedSandbox()
+    deps = _deps(sandbox, run_id="parallel-teardown")
+    ctx = SimpleNamespace(deps=deps)
+
+    reported = await _tool("run_python")(ctx, "1")
+    await clear_sandbox_session(deps)
+
+    assert "kernel was restarted" in reported
+    assert "session ended" in reported
+
+
+@pytest.mark.asyncio
+async def test_failed_cell_with_no_outputs_is_not_reported_as_clean() -> None:
+    sandbox = FakeSandbox(canned_cell=CellResult(status="error"))
+    deps = _deps(sandbox, run_id="silent-failure")
+    ctx = SimpleNamespace(deps=deps)
+
+    reported = await _tool("run_python")(ctx, "1")
+    await clear_sandbox_session(deps)
+
+    assert reported != "(no output)"
+    assert "error" in reported
+
+
+@pytest.mark.asyncio
+async def test_run_python_timeout_keeps_partial_output_and_warns_state_is_gone() -> None:
+    sandbox = FakeSandbox(canned_cell=_cell(text="partial progress\n", timed_out=True))
+    deps = _deps(sandbox, run_id="timeout-report-run")
+    ctx = SimpleNamespace(deps=deps)
+
+    reported = await _tool("run_python")(ctx, "loop", 1)
+    await clear_sandbox_session(deps)
+
+    # Output emitted before the deadline is the debugging signal for a stalled cell.
+    assert "partial progress" in reported
+    assert "timed out" in reported
+    assert "kernel was restarted" in reported
+
+
+@pytest.mark.asyncio
+async def test_run_python_transport_error_warns_state_is_gone() -> None:
+    sandbox = FakeSandbox(canned_cell=_cell(transport_error=True))
+    deps = _deps(sandbox, run_id="transport-report-run")
+    ctx = SimpleNamespace(deps=deps)
+
+    reported = await _tool("run_python")(ctx, "broken")
+    await clear_sandbox_session(deps)
+
+    assert "transport failed" in reported
+    assert "kernel was restarted" in reported
+
+
+@pytest.mark.asyncio
+async def test_run_python_success_does_not_warn_about_state_loss() -> None:
+    sandbox = FakeSandbox(canned_cell=_cell(text="fine\n", result="7"))
+    deps = _deps(sandbox, run_id="healthy-run")
+    ctx = SimpleNamespace(deps=deps)
+
+    reported = await _tool("run_python")(ctx, "3 + 4")
+    await clear_sandbox_session(deps)
+
+    assert "7" in reported
+    assert "kernel was restarted" not in reported
 
 
 @pytest.mark.asyncio

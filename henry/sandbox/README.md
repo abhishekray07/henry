@@ -18,6 +18,20 @@ their nbformat-shaped fields, including complete MIME bundles and metadata.
 Output is bounded by serialized UTF-8 byte, per-item, field, and item-count
 limits before the host parses it.
 
+A timeout or transport failure tears the session down: the container **and its
+workspace volume** are removed, so variables, written files, and cloned repos
+are all lost and the next call boots a fresh kernel. The sandbox signals this
+with `CellResult.session_invalidated`, which is set host-side only. Callers must
+never infer teardown from output fields such as `ename` — sandboxed code picks
+its own exception names and could otherwise evict a healthy container from the
+cache and leak it. Cell timeouts are clamped to `SandboxPolicy.max_timeout_s`
+(600s) and a non-positive `timeout_s` is rejected rather than clamped.
+
+Shell escapes (`!cmd`) raise on a nonzero exit. ipykernel overrides IPython's
+`system_piped` without honouring `system_raise_on_error`, so the kernel startup
+wraps `shell.system` instead; without it `!false` is an "ok" cell with no output,
+which the agent cannot tell apart from success.
+
 Repository cloning remains host-side through the GitHub archive API; only safe
 regular files are copied into the isolated workspace. Run the live smoke suite
 after building the image:

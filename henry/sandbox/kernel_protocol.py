@@ -19,6 +19,8 @@ _MAX_TOTAL_BYTES = 256 * 1024
 _MAX_ITEM_BYTES = 256 * 1024
 _MAX_ITEMS = 256
 _MAX_FIELD_BYTES = 16 * 1024
+_MAX_CHANNEL_FAILURES = 5
+_CHANNEL_RETRY_SLEEP_S = 0.05
 
 
 def _strip_ansi(text: str) -> str:
@@ -177,6 +179,7 @@ def drain_execution(
         _append(output)
 
     deadline = time.monotonic() + timeout
+    channel_failures = 0
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -197,7 +200,17 @@ def drain_execution(
         except queue.Empty:
             continue
         except Exception:
+            # An empty queue is normal and already waited out its timeout. Any
+            # other failure returns instantly, so retrying it at full speed
+            # spins the CPU until the deadline. Back off, and give up once the
+            # channel looks genuinely broken.
+            channel_failures += 1
+            if channel_failures >= _MAX_CHANNEL_FAILURES:
+                status = "error"
+                break
+            time.sleep(_CHANNEL_RETRY_SLEEP_S)
             continue
+        channel_failures = 0
         if message.get("parent_header", {}).get("msg_id") != msg_id:
             continue
 

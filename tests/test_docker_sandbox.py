@@ -19,6 +19,7 @@ from henry.sandbox.docker import (
     SandboxPathError,
     SandboxSessionDestroyed,
     SandboxSessionNotFound,
+    _KERNEL_STARTUP,
 )
 from henry.sandbox_types import CellResult, SandboxPolicy
 
@@ -53,10 +54,13 @@ class _KernelContainer:
         ping_delay_s: float = 0,
         exec_entered: threading.Event | None = None,
         exec_release: threading.Event | None = None,
+        boot_logs: bytes = b"",
     ) -> None:
         self.id = "container-1"
         self.exec_calls: list[list[str]] = []
+        self.exec_env: dict[str, str] = {}
         self.removed = False
+        self._boot_logs = boot_logs
         self._ping_ok = ping_ok
         self._payload = _ok_payload() if exec_payload is None else exec_payload
         self._stdout = exec_stdout
@@ -66,8 +70,12 @@ class _KernelContainer:
         self._exec_entered = exec_entered
         self._exec_release = exec_release
 
+    def logs(self, tail=None):
+        return self._boot_logs
+
     def exec_run(self, cmd, **kwargs):
         self.exec_calls.append(cmd)
+        self.exec_env.update(kwargs.get("environment") or {})
         if cmd[-1] == "ping":
             if self._ping_delay_s:
                 time.sleep(self._ping_delay_s)
@@ -158,6 +166,8 @@ async def test_start_applies_isolation_flags() -> None:
         "HOME": "/tmp",
         "JUPYTER_RUNTIME_DIR": "/tmp/jupyter-runtime",
         "IPYTHONDIR": "/tmp/ipython",
+        "HENRY_KERNEL_CONNECTION_FILE": "/workspace/.henry/kernel.json",
+        "HENRY_KERNEL_STARTUP": _KERNEL_STARTUP,
     }
     assert any(call[-1] == "ping" for call in client.container.exec_calls)
 
@@ -168,6 +178,61 @@ async def test_start_cleans_up_when_never_ready() -> None:
     sandbox = DockerSandbox(client=client)
 
     with pytest.raises(SandboxError, match="did not become ready"):
+        await sandbox.start(SandboxPolicy(), ready_timeout_s=0.02)
+
+    assert client.container.removed is True
+    assert client.volumes.removed is True
+
+
+@pytest.mark.asyncio
+async def test_exec_cell_clamps_an_oversized_timeout_to_policy_max() -> None:
+    # The model chooses timeout_s, so an unbounded value would let one cell hold
+    # a container for as long as it asks.
+    client = _RecordingClient()
+    sandbox = DockerSandbox(client=client)
+    session = await sandbox.start(SandboxPolicy(max_timeout_s=600))
+
+    await sandbox.exec_cell(session, "1", timeout_s=999_999)
+
+    assert client.container.exec_env.get("HENRY_CELL_TIMEOUT") == "600"
+
+
+@pytest.mark.asyncio
+async def test_exec_cell_rejects_a_non_positive_timeout_without_destroying_the_session() -> None:
+    client = _RecordingClient()
+    sandbox = DockerSandbox(client=client)
+    session = await sandbox.start(SandboxPolicy())
+
+    with pytest.raises(ValueError, match="must be positive"):
+        await sandbox.exec_cell(session, "1", timeout_s=0)
+
+    # The session must survive a bad argument.
+    assert client.container.removed is False
+    assert (await sandbox.exec_cell(session, "1")).status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_kernel_connection_file_follows_a_non_default_workdir() -> None:
+    client = _RecordingClient()
+    sandbox = DockerSandbox(client=client)
+
+    await sandbox.start(SandboxPolicy(workdir="/work"))
+
+    # Only the workspace mount is writable; a hardcoded /workspace path would
+    # make boot write to the read-only root and never become ready.
+    env = client.containers.kwargs["environment"]
+    assert env["HENRY_KERNEL_CONNECTION_FILE"] == "/work/.henry/kernel.json"
+
+
+@pytest.mark.asyncio
+async def test_start_reports_container_logs_when_kernel_never_boots() -> None:
+    client = _RecordingClient(
+        _KernelContainer(ping_ok=False, boot_logs=b"ModuleNotFoundError: No module named 'ipykernel'")
+    )
+    sandbox = DockerSandbox(client=client)
+
+    # A stale or mis-built image is otherwise an opaque readiness timeout.
+    with pytest.raises(SandboxError, match="ipykernel"):
         await sandbox.start(SandboxPolicy(), ready_timeout_s=0.02)
 
     assert client.container.removed is True
@@ -296,15 +361,17 @@ async def test_concurrent_cell_after_timeout_is_refused() -> None:
 async def test_host_wall_timeout_invalidates_session(monkeypatch) -> None:
     from henry.sandbox import docker as docker_module
 
+    # Drive the host wall-clock guard with a valid timeout and a near-zero grace:
+    # timeout_s=0 is now rejected outright, so it can no longer force this path.
     monkeypatch.setattr(docker_module, "_CELL_EXEC_GRACE_S", 0.01)
     entered = threading.Event()
     release = threading.Event()
     container = _KernelContainer(exec_entered=entered, exec_release=release)
     client = _RecordingClient(container)
     sandbox = DockerSandbox(client=client)
-    session = await sandbox.start(SandboxPolicy())
+    session = await sandbox.start(SandboxPolicy(default_timeout_s=1))
 
-    result = await sandbox.exec_cell(session, "blocked transport", timeout_s=0)
+    result = await sandbox.exec_cell(session, "blocked transport")
 
     assert result.timed_out is True
     assert container.removed is True

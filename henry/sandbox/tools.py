@@ -17,6 +17,7 @@ except ImportError:  # pragma: no cover - only used before dependencies are inst
     RunContext = Any
 
 from henry.contracts import AgentDeps, ToolSpec
+from henry.sandbox.docker import SandboxSessionDestroyed, SandboxSessionNotFound
 from henry.sandbox_types import CellResult, SandboxPolicy
 
 _MAX_CLONE_ARCHIVE_BYTES = 50 * 1024 * 1024
@@ -49,11 +50,20 @@ def sandbox_tools() -> list[ToolSpec]:
 
         Variables, imports, and definitions persist across calls within a task.
         Use ``!cmd`` for shell commands and ``%`` for IPython magics.
+
+        A cell that times out or hits a kernel error restarts the kernel and
+        discards that state; the result says so when it happens.
         """
         session = await _session_for(ctx.deps)
-        result = await ctx.deps.sandbox.exec_cell(session, code, timeout_s=timeout_s)
+        try:
+            result = await ctx.deps.sandbox.exec_cell(session, code, timeout_s=timeout_s)
+        except (SandboxSessionNotFound, SandboxSessionDestroyed):
+            # A cell running in parallel tore this session down first. Report the
+            # reset the same way a first-hand timeout would, rather than raising.
+            await _forget_session(ctx.deps, session)
+            return f"error: the kernel session ended before this cell ran. {_KERNEL_RESET_NOTICE}"
         if _result_invalidates_session(result):
-            await _forget_session(ctx.deps)
+            await _forget_session(ctx.deps, session)
         return _format_cell_result(result)
 
     async def write_file(ctx: RunContext[AgentDeps], path: str, content: str) -> str:
@@ -106,9 +116,17 @@ async def _session_for(deps: AgentDeps) -> str:
         return session
 
 
-async def _forget_session(deps: AgentDeps) -> None:
+async def _forget_session(deps: AgentDeps, session: str) -> None:
+    """Drop the cache entry for `session`, and only for that session.
+
+    Cells run concurrently against one cached session, so a failure can surface
+    after that session was already replaced. Clearing whatever happens to be
+    cached would evict the healthy successor, and nothing else tracks it — the
+    run-end cleanup reads this cache, so the container would leak.
+    """
     async with _locked_slot(_session_key(deps)) as slot:
-        slot.cached = None
+        if slot.cached is not None and slot.cached.session == session:
+            slot.cached = None
 
 
 @asynccontextmanager
@@ -135,15 +153,20 @@ def _session_key(deps: AgentDeps) -> tuple[int, str]:
 
 
 def _result_invalidates_session(result: CellResult) -> bool:
-    return result.timed_out or any(
-        output.output_type == "error" and output.ename == "KernelTransportError"
-        for output in result.outputs
-    )
+    # Only the sandbox may declare teardown. Sandboxed code chooses its own
+    # exception names, so matching on `ename` here let a cell raising a
+    # look-alike KernelTransportError evict a healthy container from the cache
+    # and leak it.
+    return result.session_invalidated
 
 
-def _format_cell_result(result: CellResult) -> str:
-    if result.timed_out:
-        return "timed out: cell exceeded its time limit"
+_KERNEL_RESET_NOTICE = (
+    "The kernel was restarted and its workspace was destroyed, so variables, imports, definitions, "
+    "written files, and cloned repositories from earlier in this task are all gone."
+)
+
+
+def _render_outputs(result: CellResult) -> list[str]:
     parts: list[str] = []
     for output in result.outputs:
         if output.output_type == "stream":
@@ -160,6 +183,28 @@ def _format_cell_result(result: CellResult) -> str:
             parts.append("error:\n" + "\n".join(traceback))
     if result.truncated:
         parts.append("[output truncated]")
+    return parts
+
+
+def _format_cell_result(result: CellResult) -> str:
+    if result.timed_out:
+        # Output emitted before the deadline is the main debugging signal for a
+        # stalled cell, so keep it instead of reporting the timeout alone.
+        parts = _render_outputs(result)
+        parts.append(f"timed out: cell exceeded its time limit. {_KERNEL_RESET_NOTICE}")
+        return "\n".join(part for part in parts if part)
+    parts = _render_outputs(result)
+    if _result_invalidates_session(result):
+        parts.append(_KERNEL_RESET_NOTICE)
+    # A failed cell whose error output never made it back must not read as a
+    # clean run. The traceback is dropped whenever earlier output has already
+    # spent the byte budget, so a cell that prints a lot and then raises would
+    # otherwise return its stdout and nothing else.
+    if result.status != "ok" and not any(o.output_type == "error" for o in result.outputs):
+        if result.truncated:
+            parts.append("error: the cell raised, but its error output exceeded the output limit")
+        else:
+            parts.append("error: the kernel reported a failure but produced no output")
     text = "\n".join(part for part in parts if part)
     return text or "(no output)"
 

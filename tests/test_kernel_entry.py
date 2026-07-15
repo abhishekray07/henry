@@ -16,6 +16,16 @@ class _FakeKernelClient:
     def stop_channels(self) -> None: ...
 
 
+def test_connection_file_follows_the_host_supplied_path(monkeypatch) -> None:
+    monkeypatch.setenv("HENRY_KERNEL_CONNECTION_FILE", "/work/.henry/kernel.json")
+    assert kernel_entry._connection_file() == "/work/.henry/kernel.json"
+
+
+def test_connection_file_defaults_when_host_sets_nothing(monkeypatch) -> None:
+    monkeypatch.delenv("HENRY_KERNEL_CONNECTION_FILE", raising=False)
+    assert kernel_entry._connection_file() == "/workspace/.henry/kernel.json"
+
+
 def test_exec_decodes_and_prints_json(monkeypatch, capsys) -> None:
     seen = {}
     monkeypatch.setattr(kernel_entry, "_blocking_client", lambda connection_file: _FakeKernelClient())
