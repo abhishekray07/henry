@@ -10,7 +10,7 @@ except ImportError:  # pragma: no cover - only used before dependencies are inst
     RunContext = Any
 
 from henry.contracts import AgentDeps, RunResult, ToolSpec
-from henry.sandbox_types import ExecRequest, ExecResult, SandboxPolicy
+from henry.sandbox_types import CellResult, ExecRequest, ExecResult, SandboxPolicy
 from henry.types import ChannelState, ConversationTranscript, MemoryItem
 
 
@@ -66,6 +66,7 @@ class FakeMemory:
 @dataclass
 class FakeSandbox:
     canned_result: ExecResult = field(default_factory=lambda: ExecResult(exit_code=0, stdout="ok", stderr=""))
+    canned_cell: CellResult = field(default_factory=CellResult)
     calls: list[tuple[str, Any]] = field(default_factory=list)
     files: dict[tuple[str, str], bytes] = field(default_factory=dict)
     next_session: int = 1
@@ -79,6 +80,10 @@ class FakeSandbox:
     async def exec(self, session: str, req: ExecRequest) -> ExecResult:
         self.calls.append(("exec", session, req))
         return self.canned_result
+
+    async def exec_cell(self, session: str, code: str, timeout_s: int | None = None) -> CellResult:
+        self.calls.append(("exec_cell", session, code))
+        return self.canned_cell
 
     async def write_file(self, session: str, path: str, content: bytes) -> None:
         self.calls.append(("write_file", session, path, content))
