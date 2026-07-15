@@ -265,7 +265,7 @@ async def test_handle_event_uses_configured_transcript_fetcher() -> None:
 def test_agent_tool_bridge_uses_real_memory_and_sandbox_factories() -> None:
     assert {tool.__name__ for tool in memory_tools()} == {"read_memory", "write_memory", "search_memory"}
     assert {tool.__name__ for tool in sandbox_tools()} == {
-        "run_bash",
+        "run_python",
         "write_file",
         "read_file",
         "clone_repo",

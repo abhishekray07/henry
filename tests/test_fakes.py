@@ -52,3 +52,18 @@ def test_fake_integration_exposes_tool_spec() -> None:
 
     assert len(tools) == 1
     assert tools[0].__name__ == "echo"
+
+
+async def test_fake_sandbox_exec_cell_returns_canned_and_records() -> None:
+    from henry.sandbox_types import CellOutput, CellResult, SandboxPolicy
+
+    canned = CellResult(
+        status="ok",
+        outputs=[CellOutput(output_type="execute_result", data={"text/plain": "42"})],
+    )
+    sandbox = FakeSandbox(canned_cell=canned)
+    session = await sandbox.start(SandboxPolicy())
+    result = await sandbox.exec_cell(session, "40 + 2")
+
+    assert result.outputs[0].data["text/plain"] == "42"
+    assert ("exec_cell", session, "40 + 2") in sandbox.calls

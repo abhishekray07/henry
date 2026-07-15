@@ -25,7 +25,9 @@ _LOG = logging.getLogger(__name__)
 
 DEFAULT_INSTRUCTIONS = (
     "You are Henry, a helpful AI teammate in Slack. Answer clearly, use tools when they are useful, "
-    "and keep channel-specific memory separate from model-visible user input."
+    "and keep channel-specific memory separate from model-visible user input. For investigation and "
+    "computation, use run_python: a stateful, network-isolated IPython kernel where variables and "
+    "imports persist across calls within a task."
 )
 
 

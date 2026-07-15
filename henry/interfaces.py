@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Literal, Protocol, Sequence, runtime_checkable
 
 from henry.contracts import ToolSpec
-from henry.sandbox_types import ExecRequest, ExecResult, SandboxPolicy
+from henry.sandbox_types import CellResult, ExecRequest, ExecResult, SandboxPolicy
 from henry.types import ChannelState, ConversationTranscript, MemoryItem
 
 
@@ -33,6 +33,8 @@ class Sandbox(Protocol):
     async def start(self, policy: SandboxPolicy) -> str: ...
 
     async def exec(self, session: str, req: ExecRequest) -> ExecResult: ...
+
+    async def exec_cell(self, session: str, code: str, timeout_s: int | None = None) -> CellResult: ...
 
     async def write_file(self, session: str, path: str, content: bytes) -> None: ...
 

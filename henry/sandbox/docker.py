@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
+import json
 import os
 import posixpath
 import tarfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from henry.sandbox_types import ExecRequest, ExecResult, SandboxPolicy
+from henry.sandbox_types import CellOutput, CellResult, ExecRequest, ExecResult, SandboxPolicy
 
 try:
     import docker
@@ -45,6 +47,31 @@ class SandboxArchiveError(SandboxError):
     pass
 
 
+KERNEL_ENTRY = "/opt/henry_kernel/kernel_entry.py"
+
+# Make `!cmd` report failure. run_python advertises shell escapes, but ipykernel's
+# ZMQInteractiveShell overrides system_piped without consulting IPython's
+# system_raise_on_error trait, so `!false` would otherwise be an "ok" cell with no
+# output — indistinguishable from success. Wrap the bound method instead, and keep
+# the helper out of the user namespace.
+_KERNEL_STARTUP = """
+def _henry_install_shell_error_propagation():
+    shell = get_ipython()
+    original = shell.system
+    def checked(cmd):
+        original(cmd)
+        code = shell.user_ns.get("_exit_code", 0)
+        if code:
+            raise RuntimeError(f"shell command failed (exit {code}): {cmd}")
+    shell.system = checked
+_henry_install_shell_error_propagation()
+del _henry_install_shell_error_propagation
+"""
+_DEFAULT_READY_TIMEOUT_S = 30.0
+_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
+_CELL_EXEC_GRACE_S = 15.0
+
+
 @dataclass
 class _Session:
     container: Container
@@ -52,6 +79,7 @@ class _Session:
     policy: SandboxPolicy
     created_at: float
     destroyed: bool = False
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class DockerSandbox:
@@ -71,7 +99,11 @@ class DockerSandbox:
         self._file_limit_bytes = file_limit_bytes
         self._pids_limit = pids_limit
 
-    async def start(self, policy: SandboxPolicy) -> str:
+    async def start(
+        self,
+        policy: SandboxPolicy,
+        ready_timeout_s: float = _DEFAULT_READY_TIMEOUT_S,
+    ) -> str:
         if policy.network != "none":
             raise ValueError("V1 sandbox only supports network='none'; fetch external data host-side")
 
@@ -87,7 +119,7 @@ class DockerSandbox:
             try:
                 container = self._client.containers.run(
                     policy.image,
-                    ["sleep", "infinity"],
+                    ["python", KERNEL_ENTRY, "boot"],
                     detach=True,
                     read_only=True,
                     working_dir=policy.workdir,
@@ -95,6 +127,18 @@ class DockerSandbox:
                     nano_cpus=int(policy.cpus * 1_000_000_000),
                     pids_limit=self._pids_limit,
                     network_mode="none",
+                    environment={
+                        "HOME": "/tmp",
+                        "JUPYTER_RUNTIME_DIR": "/tmp/jupyter-runtime",
+                        "IPYTHONDIR": "/tmp/ipython",
+                        # Only the workspace mount is writable, so the connection
+                        # file has to follow workdir. `docker exec` inherits this,
+                        # keeping boot, ping, and exec pointed at one path.
+                        "HENRY_KERNEL_CONNECTION_FILE": posixpath.join(
+                            policy.workdir, ".henry", "kernel.json"
+                        ),
+                        "HENRY_KERNEL_STARTUP": _KERNEL_STARTUP,
+                    },
                     tmpfs=tmpfs,
                     mounts=[
                         Mount(
@@ -114,13 +158,68 @@ class DockerSandbox:
             return container, volume
 
         container, volume = await asyncio.to_thread(_start)
-        self._sessions[container.id] = _Session(
+        session = str(container.id)
+        self._sessions[session] = _Session(
             container=container,
             workspace_volume=volume,
             policy=policy,
             created_at=time.time(),
         )
-        return str(container.id)
+        try:
+            await self._wait_ready(session, ready_timeout_s)
+        except asyncio.CancelledError:
+            await asyncio.shield(self._remove_session(session, force=True))
+            raise
+        except Exception as exc:
+            # Capture boot output before teardown: a kernel that never starts is
+            # otherwise indistinguishable from a slow one.
+            logs = await self._session_logs(session)
+            await self._remove_session(session, force=True)
+            detail = f": {logs}" if logs else ""
+            raise SandboxError(f"sandbox kernel did not become ready{detail}") from exc
+        return session
+
+    async def _session_logs(self, session: str, tail: int = 50) -> str:
+        state = self._sessions.get(session)
+        if state is None:
+            return ""
+
+        def _logs() -> str:
+            raw = state.container.logs(tail=tail)
+            if isinstance(raw, bytes):
+                return raw.decode("utf-8", errors="replace").strip()
+            return str(raw).strip()
+
+        try:
+            return await asyncio.to_thread(_logs)
+        except Exception:
+            return ""
+
+    async def _wait_ready(self, session: str, timeout_s: float) -> None:
+        state = self._get_session(session)
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SandboxError("kernel readiness timed out")
+
+            def _ping() -> int:
+                result = state.container.exec_run(
+                    ["python", KERNEL_ENTRY, "ping"],
+                    workdir=state.policy.workdir,
+                    environment={"HENRY_PING_TIMEOUT": str(max(0.01, min(5.0, remaining)))},
+                )
+                return int(getattr(result, "exit_code", 1))
+
+            try:
+                exit_code = await asyncio.wait_for(asyncio.to_thread(_ping), timeout=remaining)
+            except TimeoutError as exc:
+                raise SandboxError("kernel readiness timed out") from exc
+            except Exception:
+                exit_code = 1
+            if exit_code == 0:
+                return
+            await asyncio.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
 
     async def exec(self, session: str, req: ExecRequest) -> ExecResult:
         state = self._get_session(session)
@@ -160,6 +259,129 @@ class DockerSandbox:
             duration_ms=self._duration_ms(started),
             truncated=stdout_truncated or stderr_truncated,
         )
+
+    async def exec_cell(self, session: str, code: str, timeout_s: int | None = None) -> CellResult:
+        state = self._get_session(session)
+        timeout = _bounded_timeout(timeout_s, state.policy)
+        code_b64 = base64.b64encode(code.encode("utf-8")).decode("ascii")
+
+        def _exec_run() -> Any:
+            return state.container.exec_run(
+                ["python", KERNEL_ENTRY, "exec", code_b64],
+                workdir=state.policy.workdir,
+                environment={"HENRY_CELL_TIMEOUT": str(timeout)},
+                demux=True,
+            )
+
+        async with state.lock:
+            if state.destroyed:
+                raise SandboxSessionDestroyed(f"sandbox session is destroyed: {session}")
+
+            try:
+                docker_result = await asyncio.wait_for(
+                    asyncio.to_thread(_exec_run),
+                    timeout=timeout + _CELL_EXEC_GRACE_S,
+                )
+            except asyncio.CancelledError:
+                await asyncio.shield(self._invalidate_locked(state, session))
+                raise
+            except TimeoutError:
+                await self._invalidate_locked(state, session)
+                return _timeout_cell(timeout)
+            except Exception:
+                await self._invalidate_locked(state, session)
+                return _transport_error_cell("kernel exec failed: Docker transport error")
+
+            exit_code = int(getattr(docker_result, "exit_code", 1))
+            stdout_bytes, stderr_bytes = self._split_exec_output(getattr(docker_result, "output", b""))
+            if exit_code != 0:
+                stderr, _ = self._decode_and_cap(stderr_bytes)
+                await self._invalidate_locked(state, session)
+                return _transport_error_cell(f"kernel exec failed (exit {exit_code}): {stderr}")
+            if len(stdout_bytes) > _MAX_PAYLOAD_BYTES:
+                await self._invalidate_locked(state, session)
+                return _transport_error_cell("kernel response exceeded host payload limit")
+
+            try:
+                payload = json.loads(stdout_bytes.decode("utf-8"))
+                result = self._cell_result_from_payload(payload)
+            except (UnicodeDecodeError, ValueError, KeyError, TypeError):
+                await self._invalidate_locked(state, session)
+                return _transport_error_cell("malformed kernel response")
+
+            if result.timed_out:
+                await self._invalidate_locked(state, session)
+                result.session_invalidated = True
+            return result
+
+    def _cell_result_from_payload(self, payload: Any) -> CellResult:
+        if not isinstance(payload, dict):
+            raise ValueError("kernel response must be an object")
+
+        status = payload.get("status")
+        execution_count = payload.get("execution_count")
+        timed_out = payload.get("timed_out")
+        truncated = payload.get("truncated")
+        raw_outputs = payload.get("outputs")
+        if status not in {"ok", "error"}:
+            raise ValueError("invalid cell status")
+        if type(execution_count) is not int or execution_count < 0:
+            raise ValueError("invalid execution count")
+        if type(timed_out) is not bool or type(truncated) is not bool:
+            raise ValueError("invalid cell flags")
+        if not isinstance(raw_outputs, list):
+            raise ValueError("cell outputs must be a list")
+
+        outputs = [self._cell_output_from_payload(output) for output in raw_outputs]
+        return CellResult(
+            status=status,
+            outputs=outputs,
+            execution_count=execution_count,
+            timed_out=timed_out,
+            truncated=truncated,
+        )
+
+    def _cell_output_from_payload(self, output: Any) -> CellOutput:
+        if not isinstance(output, dict):
+            raise ValueError("cell output must be an object")
+        output_type = output.get("output_type")
+        if output_type == "stream":
+            name = output.get("name")
+            text = output.get("text")
+            if name not in {"stdout", "stderr"} or not isinstance(text, str):
+                raise ValueError("invalid stream output")
+            return CellOutput(output_type=output_type, name=name, text=text)
+        if output_type in {"execute_result", "display_data"}:
+            data = output.get("data")
+            metadata = output.get("metadata")
+            count = output.get("execution_count")
+            if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
+                raise ValueError("invalid MIME bundle")
+            if not isinstance(metadata, dict):
+                raise ValueError("invalid output metadata")
+            if count is not None and (type(count) is not int or count < 0):
+                raise ValueError("invalid output execution count")
+            return CellOutput(
+                output_type=output_type,
+                data=data,
+                metadata=metadata,
+                execution_count=count,
+            )
+        if output_type == "error":
+            ename = output.get("ename")
+            evalue = output.get("evalue")
+            traceback = output.get("traceback")
+            if not isinstance(ename, str) or not isinstance(evalue, str):
+                raise ValueError("invalid error output")
+            if not isinstance(traceback, list) or not all(isinstance(line, str) for line in traceback):
+                raise ValueError("invalid traceback")
+            return CellOutput(
+                output_type=output_type,
+                ename=ename,
+                evalue=evalue,
+                traceback=traceback,
+            )
+        raise ValueError("invalid cell output type")
 
     async def write_file(self, session: str, path: str, content: bytes) -> None:
         if len(content) > self._file_limit_bytes:
@@ -226,10 +448,31 @@ class DockerSandbox:
         return state
 
     async def _remove_session(self, session: str, *, force: bool) -> None:
-        state = self._sessions.pop(session, None)
+        state = self._sessions.get(session)
         if state is None:
             return
+        async with state.lock:
+            cleanup = asyncio.create_task(self._remove_session_locked(session, state, force=force))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
+
+    async def _invalidate_locked(self, state: _Session, session: str) -> None:
+        try:
+            await self._remove_session_locked(session, state, force=True)
+        except SandboxError:
+            # The session is removed from the registry before Docker cleanup. A
+            # cleanup failure must not make a dead kernel reusable by callers.
+            pass
+
+    async def _remove_session_locked(self, session: str, state: _Session, *, force: bool) -> None:
+        if state.destroyed:
+            return
         state.destroyed = True
+        if self._sessions.get(session) is state:
+            self._sessions.pop(session, None)
 
         def _remove() -> None:
             # Always attempt volume cleanup, even if container removal fails, so a
@@ -310,6 +553,50 @@ class DockerSandbox:
 
     def _duration_ms(self, started: float) -> int:
         return int((time.monotonic() - started) * 1000)
+
+
+def _bounded_timeout(timeout_s: int | None, policy: SandboxPolicy) -> int:
+    """Clamp a caller-supplied cell timeout into the policy's allowed range.
+
+    Rejecting a non-positive timeout is deliberate: clamping it up would let a
+    bad call silently expire and tear the session down instead of erroring.
+    """
+    if timeout_s is None:
+        return policy.default_timeout_s
+    if timeout_s <= 0:
+        raise ValueError(f"timeout_s must be positive, got {timeout_s}")
+    return min(timeout_s, policy.max_timeout_s)
+
+
+def _timeout_cell(timeout: int) -> CellResult:
+    return CellResult(
+        status="error",
+        timed_out=True,
+        session_invalidated=True,
+        outputs=[
+            CellOutput(
+                output_type="error",
+                ename="ExecutionTimeout",
+                evalue=f"cell timed out after {timeout}s",
+                traceback=[],
+            )
+        ],
+    )
+
+
+def _transport_error_cell(message: str) -> CellResult:
+    return CellResult(
+        status="error",
+        session_invalidated=True,
+        outputs=[
+            CellOutput(
+                output_type="error",
+                ename="KernelTransportError",
+                evalue=message,
+                traceback=[],
+            )
+        ],
+    )
 
 
 def _docker_client_from_env() -> Any:
