@@ -13,10 +13,11 @@ from henry.sandbox.tools import (
     _MAX_CLONE_FILE_BYTES,
     _safe_files_from_github_tarball,
     _safe_relative_dest,
+    _session_for,
     clear_sandbox_session,
     sandbox_tools,
 )
-from henry.sandbox_types import ExecResult
+from henry.sandbox_types import CellOutput, CellResult
 from henry.testing import FakeMemory, FakeSandbox
 from henry.types import ChannelContext
 
@@ -60,35 +61,123 @@ def _deps(
 
 
 @pytest.mark.asyncio
-async def test_run_bash_starts_and_reuses_run_scoped_session() -> None:
-    sandbox = FakeSandbox(canned_result=ExecResult(exit_code=0, stdout="hello", stderr=""))
+def _cell(text=None, result=None, timed_out=False, transport_error=False):
+    outputs = []
+    if text is not None:
+        outputs.append(CellOutput(output_type="stream", name="stdout", text=text))
+    if result is not None:
+        outputs.append(CellOutput(output_type="execute_result", data={"text/plain": result}))
+    if transport_error:
+        outputs.append(
+            CellOutput(
+                output_type="error",
+                ename="KernelTransportError",
+                evalue="transport failed",
+                traceback=[],
+            )
+        )
+    status = "error" if timed_out or transport_error else "ok"
+    return CellResult(status=status, outputs=outputs, timed_out=timed_out)
+
+
+@pytest.mark.asyncio
+async def test_run_python_reuses_run_scoped_session() -> None:
+    sandbox = FakeSandbox(canned_cell=_cell(text="hello\n", result="7"))
     deps = _deps(sandbox)
     ctx = SimpleNamespace(deps=deps)
 
-    first = await _tool("run_bash")(ctx, "echo hello")
+    first = await _tool("run_python")(ctx, "3 + 4")
     await _tool("write_file")(ctx, "notes.txt", "content")
     await clear_sandbox_session(deps)
 
-    assert "exit 0" in first
+    assert "hello" in first
+    assert "7" in first
     assert [call[0] for call in sandbox.calls].count("start") == 1
     assert ("write_file", "fake-session-1", "notes.txt", b"content") in sandbox.calls
     assert sandbox.calls[-1] == ("destroy", "fake-session-1")
 
 
 @pytest.mark.asyncio
-async def test_timeout_result_invalidates_cached_session() -> None:
-    sandbox = FakeSandbox(canned_result=ExecResult(exit_code=124, stdout="", stderr="timeout", timed_out=True))
+async def test_run_python_timeout_invalidates_cached_session() -> None:
+    sandbox = FakeSandbox(canned_cell=_cell(timed_out=True))
     deps = _deps(sandbox, run_id="timeout-run")
     ctx = SimpleNamespace(deps=deps)
 
-    first = await _tool("run_bash")(ctx, "sleep 999", 1)
-    sandbox.canned_result = ExecResult(exit_code=0, stdout="new", stderr="")
-    second = await _tool("run_bash")(ctx, "echo new")
+    first = await _tool("run_python")(ctx, "loop", 1)
+    sandbox.canned_cell = _cell(result="ok")
+    second = await _tool("run_python")(ctx, "1")
     await clear_sandbox_session(deps)
 
     assert "timed out" in first
-    assert "exit 0" in second
+    assert "ok" in second
     assert [call[0] for call in sandbox.calls].count("start") == 2
+
+
+@pytest.mark.asyncio
+async def test_run_python_transport_error_invalidates_cached_session() -> None:
+    sandbox = FakeSandbox(canned_cell=_cell(transport_error=True))
+    deps = _deps(sandbox, run_id="transport-run")
+    ctx = SimpleNamespace(deps=deps)
+
+    first = await _tool("run_python")(ctx, "broken")
+    sandbox.canned_cell = _cell(result="fresh")
+    second = await _tool("run_python")(ctx, "1")
+    await clear_sandbox_session(deps)
+
+    assert "transport failed" in first
+    assert "fresh" in second
+    assert [call[0] for call in sandbox.calls].count("start") == 2
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_calls_create_one_session() -> None:
+    import asyncio
+
+    class _YieldingSandbox(FakeSandbox):
+        async def start(self, policy):
+            await asyncio.sleep(0)
+            return await super().start(policy)
+
+    sandbox = _YieldingSandbox(canned_cell=_cell(result="1"))
+    deps = _deps(sandbox, run_id="race-run")
+    ctx = SimpleNamespace(deps=deps)
+
+    await asyncio.gather(_tool("run_python")(ctx, "1"), _tool("run_python")(ctx, "2"))
+    await clear_sandbox_session(deps)
+
+    assert [call[0] for call in sandbox.calls].count("start") == 1
+
+
+@pytest.mark.asyncio
+async def test_clear_serializes_with_in_flight_session_creation() -> None:
+    import asyncio
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _GatedSandbox(FakeSandbox):
+        async def start(self, policy):
+            entered.set()
+            await release.wait()
+            return await super().start(policy)
+
+    sandbox = _GatedSandbox(canned_cell=_cell(result="1"))
+    deps = _deps(sandbox, run_id="clear-race")
+    create = asyncio.create_task(_session_for(deps))
+    await entered.wait()
+    clear = asyncio.create_task(clear_sandbox_session(deps))
+    await asyncio.sleep(0)
+    release.set()
+
+    assert await create == "fake-session-1"
+    await clear
+    assert await _session_for(deps) == "fake-session-2"
+    await clear_sandbox_session(deps)
+
+    assert [call for call in sandbox.calls if call[0] == "destroy"] == [
+        ("destroy", "fake-session-1"),
+        ("destroy", "fake-session-2"),
+    ]
 
 
 @pytest.mark.asyncio
